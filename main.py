@@ -1,7 +1,7 @@
 # main.py
 #
-# Starts the four-node network and launches the interactive CLI.
-# The network runs in the background while you issue commands.
+# Starts the four-node network, the REST API, and the interactive CLI.
+# All three run concurrently in the same asyncio event loop.
 
 import asyncio
 import logging
@@ -9,6 +9,7 @@ import logging
 from node import Node
 from cli import CLI
 from storage import WalletStore
+from api import build_app, start_api
 
 
 logging.basicConfig(
@@ -26,6 +27,9 @@ PEERS = {
     8002 : [8003],
     8003 : []
 }
+
+API_HOST = "localhost"
+API_PORT = 9000
 
 
 async def main():
@@ -46,6 +50,14 @@ async def main():
     # ── Wallet store ──────────────────────────────────────────
     wallet_store = WalletStore()
 
+    # ── REST API ──────────────────────────────────────────────
+    app     = build_app(nodes, wallet_store)
+    runner  = await start_api(app, API_HOST, API_PORT)
+
+    print(f"\nREST API  : http://{API_HOST}:{API_PORT}")
+    print(f"Nodes     : {PORTS}")
+    print(f"Data dir  : data/\n")
+
     # ── CLI ───────────────────────────────────────────────────
     cli = CLI(nodes, wallet_store)
     await cli.run()
@@ -54,6 +66,7 @@ async def main():
     for node in nodes:
         node.close()
 
+    await runner.cleanup()
     print("done.")
 
 
