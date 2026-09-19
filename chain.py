@@ -5,7 +5,7 @@
 import json
 
 from block import Block
-from transaction import Transaction
+from Transaction import Transaction
 from utxo import UTXOSet, UTXO
 
 

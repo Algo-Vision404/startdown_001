@@ -28,8 +28,10 @@ class Block:
                 {
                     "tx_id": transaction.tx_id,
                     "sender": transaction.sender,
-                    "recipient": transaction.recipient,
-                    "amount": transaction.amount,
+                    "inputs": transaction.inputs,
+                    "outputs": transaction.outputs,
+                    "fee": transaction.fee,
+                    "is_coinbase": transaction.is_coinbase,
                     "timestamp": transaction.timestamp,
                     "signature": transaction.signature.hex(),
                     "sender_public_key": transaction.sender_public_key.hex(),

@@ -1,4 +1,4 @@
-# message.py — updated for UTXO transaction format
+# message.py
 
 import json
 import base64
@@ -13,6 +13,10 @@ class MessageType:
     BLOCK         = "BLOCK"
     REQUEST_CHAIN = "REQUEST_CHAIN"
     CHAIN         = "CHAIN"
+    GET_PEERS     = "GET_PEERS"       # request peer list from a node
+    PEERS         = "PEERS"           # response containing peer list
+    PING          = "PING"            # liveness check
+    PONG          = "PONG"            # liveness response
 
 
 def serialize_transaction(tx: Transaction) -> dict:
@@ -45,12 +49,12 @@ def deserialize_transaction(data: dict) -> Transaction:
 
 def serialize_block(block: Block) -> dict:
     return {
-        "index"        : block.index,
-        "timestamp"    : block.timestamp,
-        "previous_hash": block.previous_hash,
-        "hash"         : block.hash,
-        "nonce"        : block.nonce,
-        "transactions" : [serialize_transaction(tx) for tx in block.transactions]
+        "index"         : block.index,
+        "timestamp"     : block.timestamp,
+        "previous_hash" : block.previous_hash,
+        "hash"          : block.hash,
+        "nonce"         : block.nonce,
+        "transactions"  : [serialize_transaction(tx) for tx in block.transactions]
     }
 
 

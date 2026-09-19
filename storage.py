@@ -8,7 +8,7 @@ import tempfile
 from chain import Blockchain
 from block import Block
 from wallet import QuantumWallet, ALGORITHM
-from transaction import Transaction
+from Transaction import Transaction
 from utxo import UTXOSet, UTXO
 from message import serialize_block, deserialize_block
 

@@ -1,45 +1,15 @@
 # api.py
-#
-# REST API layer for the quantum chain network.
-#
-# Built with aiohttp because it integrates natively with asyncio.
-# Every handler is a coroutine running in the same event loop as
-# the node network, so handler code can await node methods directly
-# without threading or queues.
-#
-# All responses are JSON. Error responses always include a field
-# named "error" with a plain English description.
-#
-# Endpoints:
-#
-#   GET  /status                              network summary
-#   GET  /consensus                           consensus check
-#   GET  /chain/valid                         validate all chains
-#
-#   GET  /node/{port}/status                  single node status
-#   GET  /node/{port}/chain                   full chain
-#   GET  /node/{port}/chain/height            chain height only
-#   GET  /node/{port}/block/{index}           single block
-#   GET  /node/{port}/mempool                 pending transactions
-#   GET  /node/{port}/balance/{address}       address balance
-#   GET  /node/{port}/utxos/{address}         UTXOs for an address
-#   GET  /node/{port}/utxos/size              total UTXO count
-#
-#   POST /wallet/create                       create a named wallet
-#   GET  /wallet/list                         all wallets
-#   GET  /wallet/{name}                       single wallet info
-#   GET  /wallet/{name}/balance               wallet balance
-#
-#   POST /tx/send                             sign and submit a transaction
 
 import json
 import logging
+import asyncio
 
 from aiohttp import web
 
 from node import Node
 from storage import WalletStore
-from transaction import Transaction
+from Transaction import Transaction
+from message import build, serialize_block, MessageType
 
 
 # ─────────────────────────────────────────────────────────────
@@ -63,10 +33,6 @@ def err(message: str, status: int = 400) -> web.Response:
 
 
 def node_from_request(request: web.Request) -> Node | None:
-    """
-    Resolve a node from the {port} URL path parameter.
-    Returns None if the port is missing, non-integer, or not found.
-    """
     try:
         port = int(request.match_info["port"])
     except (KeyError, ValueError):
@@ -90,14 +56,14 @@ def format_tx(tx) -> dict:
 
 def format_block(block) -> dict:
     return {
-        "index"          : block.index,
-        "hash"           : block.hash,
-        "previous_hash"  : block.previous_hash,
-        "nonce"          : block.nonce,
-        "timestamp"      : block.timestamp,
-        "tx_count"       : block.transaction_count(),
-        "internally_valid": block.is_internally_valid(),
-        "transactions"   : [format_tx(tx) for tx in block.transactions]
+        "index"            : block.index,
+        "hash"             : block.hash,
+        "previous_hash"    : block.previous_hash,
+        "nonce"            : block.nonce,
+        "timestamp"        : block.timestamp,
+        "tx_count"         : block.transaction_count(),
+        "internally_valid" : block.is_internally_valid(),
+        "transactions"     : [format_tx(tx) for tx in block.transactions]
     }
 
 
@@ -106,10 +72,7 @@ def format_block(block) -> dict:
 # ─────────────────────────────────────────────────────────────
 
 async def handle_network_status(request: web.Request) -> web.Response:
-    """
-    GET /status
-    Summary of all nodes in the network.
-    """
+    """GET /status"""
     nodes  = request.app["nodes"]
     result = []
 
@@ -130,14 +93,11 @@ async def handle_network_status(request: web.Request) -> web.Response:
 
 
 async def handle_consensus(request: web.Request) -> web.Response:
-    """
-    GET /consensus
-    Check whether all nodes agree on chain height and tip hash.
-    """
+    """GET /consensus"""
     nodes      = request.app["nodes"]
-    heights    = {n.port: n.chain.height()         for n in nodes}
-    tips       = {n.port: n.chain.chain[-1].hash   for n in nodes}
-    utxo_sizes = {n.port: n.chain.utxo_set.size()  for n in nodes}
+    heights    = {n.port: n.chain.height()        for n in nodes}
+    tips       = {n.port: n.chain.chain[-1].hash  for n in nodes}
+    utxo_sizes = {n.port: n.chain.utxo_set.size() for n in nodes}
 
     unique_h   = set(heights.values())
     unique_t   = set(tips.values())
@@ -154,18 +114,10 @@ async def handle_consensus(request: web.Request) -> web.Response:
 
 
 async def handle_chain_valid(request: web.Request) -> web.Response:
-    """
-    GET /chain/valid
-    Run full chain validation on every node and return per-node results.
-    """
+    """GET /chain/valid"""
     nodes  = request.app["nodes"]
-    result = {}
-
-    for node in nodes:
-        result[node.port] = node.chain.is_valid()
-
-    all_valid = all(result.values())
-    return ok({"all_valid": all_valid, "per_node": result})
+    result = {node.port: node.chain.is_valid() for node in nodes}
+    return ok({"all_valid": all(result.values()), "per_node": result})
 
 
 # ─────────────────────────────────────────────────────────────
@@ -173,37 +125,78 @@ async def handle_chain_valid(request: web.Request) -> web.Response:
 # ─────────────────────────────────────────────────────────────
 
 async def handle_node_status(request: web.Request) -> web.Response:
-    """
-    GET /node/{port}/status
-    Detailed status for a single node.
-    """
+    """GET /node/{port}/status"""
     node = node_from_request(request)
     if not node:
         return err("node not found", 404)
 
     s = node.status()
     return ok({
-        "port"         : s["port"],
-        "height"       : s["height"],
-        "chain_valid"  : s["chain_valid"],
-        "mempool_size" : s["mempool"],
-        "mining"       : s["mining"],
-        "peers"        : s["peers"],
-        "tip_hash"     : s["tip_hash"],
-        "utxo_count"   : node.chain.utxo_set.size(),
-        "miner_address": getattr(node, "miner_address", None)
+        "port"          : s["port"],
+        "height"        : s["height"],
+        "chain_valid"   : s["chain_valid"],
+        "mempool_size"  : s["mempool"],
+        "mining"        : s["mining"],
+        "peers"         : s["peers"],
+        "tip_hash"      : s["tip_hash"],
+        "utxo_count"    : node.chain.utxo_set.size(),
+        "miner_address" : getattr(node, "miner_address", None)
+    })
+
+
+async def handle_peers(request: web.Request) -> web.Response:
+    """GET /node/{port}/peers"""
+    node = node_from_request(request)
+    if not node:
+        return err("node not found", 404)
+
+    peers = [peer.to_dict() for peer in node.peer_mgr.all_peers()]
+    return ok({
+        "port": node.port,
+        "summary": node.peer_mgr.summary(),
+        "peers": peers,
+    })
+
+
+async def handle_add_peer(request: web.Request) -> web.Response:
+    """POST /node/{port}/peers/add"""
+    node = node_from_request(request)
+    if not node:
+        return err("node not found", 404)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return err("request body must be valid JSON")
+
+    host = body.get("host", "").strip()
+    port_raw = body.get("port")
+
+    if not host:
+        return err("'host' is required")
+    if port_raw is None:
+        return err("'port' is required")
+
+    try:
+        port = int(port_raw)
+    except (TypeError, ValueError):
+        return err("'port' must be an integer")
+
+    added = node.peer_mgr.add(host, port)
+
+    if node.peer_mgr.needs_peers():
+        asyncio.create_task(node._connect_to(host, port))
+
+    return ok({
+        "added": added,
+        "host": host,
+        "port": port,
+        "summary": node.peer_mgr.summary(),
     })
 
 
 async def handle_node_chain(request: web.Request) -> web.Response:
-    """
-    GET /node/{port}/chain
-    Full chain for a node including all blocks and transactions.
-
-    For a long chain this response will be large.
-    A production API would add ?from= and ?to= query params for
-    pagination. For this prototype the full chain is returned.
-    """
+    """GET /node/{port}/chain"""
     node = node_from_request(request)
     if not node:
         return err("node not found", 404)
@@ -217,25 +210,16 @@ async def handle_node_chain(request: web.Request) -> web.Response:
 
 
 async def handle_node_height(request: web.Request) -> web.Response:
-    """
-    GET /node/{port}/chain/height
-    Chain height only. Lightweight polling endpoint.
-    """
+    """GET /node/{port}/chain/height"""
     node = node_from_request(request)
     if not node:
         return err("node not found", 404)
 
-    return ok({
-        "port"   : node.port,
-        "height" : node.chain.height()
-    })
+    return ok({"port": node.port, "height": node.chain.height()})
 
 
 async def handle_node_block(request: web.Request) -> web.Response:
-    """
-    GET /node/{port}/block/{index}
-    A single block by index including all transactions.
-    """
+    """GET /node/{port}/block/{index}"""
     node = node_from_request(request)
     if not node:
         return err("node not found", 404)
@@ -256,10 +240,7 @@ async def handle_node_block(request: web.Request) -> web.Response:
 
 
 async def handle_node_mempool(request: web.Request) -> web.Response:
-    """
-    GET /node/{port}/mempool
-    All pending transactions in a node's mempool, sorted by fee descending.
-    """
+    """GET /node/{port}/mempool"""
     node = node_from_request(request)
     if not node:
         return err("node not found", 404)
@@ -272,10 +253,7 @@ async def handle_node_mempool(request: web.Request) -> web.Response:
 
 
 async def handle_node_balance(request: web.Request) -> web.Response:
-    """
-    GET /node/{port}/balance/{address}
-    O(1) balance lookup from the UTXO set for a raw address string.
-    """
+    """GET /node/{port}/balance/{address}"""
     node = node_from_request(request)
     if not node:
         return err("node not found", 404)
@@ -284,23 +262,16 @@ async def handle_node_balance(request: web.Request) -> web.Response:
     if not address:
         return err("address is required")
 
-    balance = node.balance(address)
     return ok({
         "address"    : address,
-        "balance"    : balance,
+        "balance"    : node.balance(address),
         "node"       : node.port,
         "utxo_count" : len(node.utxos_for(address))
     })
 
 
 async def handle_node_utxos(request: web.Request) -> web.Response:
-    """
-    GET /node/{port}/utxos/{address}
-    All unspent outputs owned by a given address.
-
-    Returns each UTXO's tx_id, index, and amount so a client can
-    construct raw transactions manually if needed.
-    """
+    """GET /node/{port}/utxos/{address}"""
     node = node_from_request(request)
     if not node:
         return err("node not found", 404)
@@ -309,26 +280,17 @@ async def handle_node_utxos(request: web.Request) -> web.Response:
     if not address:
         return err("address is required")
 
-    utxos   = node.utxos_for(address)
-    balance = node.balance(address)
-
+    utxos = node.utxos_for(address)
     return ok({
         "address" : address,
-        "balance" : balance,
+        "balance" : node.balance(address),
         "count"   : len(utxos),
         "utxos"   : utxos
     })
 
 
 async def handle_utxo_set_size(request: web.Request) -> web.Response:
-    """
-    GET /node/{port}/utxos/size
-    Total number of unspent outputs in the UTXO set.
-
-    A useful health metric. A growing UTXO set means coins are being
-    created faster than they are being consolidated. A shrinking set
-    means outputs are being spent and consolidated.
-    """
+    """GET /node/{port}/utxos/size"""
     node = node_from_request(request)
     if not node:
         return err("node not found", 404)
@@ -339,19 +301,78 @@ async def handle_utxo_set_size(request: web.Request) -> web.Response:
     })
 
 
+async def handle_force_mine(request: web.Request) -> web.Response:
+    """
+    POST /node/{port}/mine
+
+    Force a node to mine a block immediately regardless of mempool size.
+    This is the bootstrap mechanism. The first call creates the first
+    coinbase UTXO, giving the miner wallet its first spendable coins.
+    """
+    node = node_from_request(request)
+    if not node:
+        return err("node not found", 404)
+
+    if node.mining:
+        return err("node is already mining", 409)
+
+    miner_address = getattr(node, "miner_address", "MINER_UNSET")
+    if miner_address == "MINER_UNSET":
+        return err("node has no miner address configured", 500)
+
+    to_mine = list(node.mempool[:node.BLOCK_SIZE])
+
+    try:
+        loop  = asyncio.get_event_loop()
+        block = await loop.run_in_executor(
+            None,
+            node.chain.mine_block,
+            to_mine,
+            miner_address
+        )
+
+        if block.previous_hash != node.chain.chain[-1].hash:
+            return err("chain tip moved during mining, try again")
+
+        node.chain.append_block(block)
+        node.seen_block_hashes.add(block.hash)
+        node._save_chain()
+
+        mined_ids    = {tx.tx_id for tx in to_mine}
+        node.mempool = [
+            tx for tx in node.mempool
+            if tx.tx_id not in mined_ids
+        ]
+
+        await node._broadcast(
+            build(MessageType.BLOCK, node.port, serialize_block(block))
+        )
+
+        coinbase = block.transactions[0] if block.transactions else None
+        reward   = coinbase.total_output() if coinbase else 0
+
+        return ok({
+            "mined"           : True,
+            "block_index"     : block.index,
+            "hash"            : block.hash,
+            "nonce"           : block.nonce,
+            "height"          : node.chain.height(),
+            "tx_count"        : block.transaction_count(),
+            "coinbase_reward" : reward,
+            "miner_address"   : miner_address,
+            "utxo_count"      : node.chain.utxo_set.size()
+        })
+
+    except Exception as e:
+        return err(f"mining failed: {e}")
+
+
 # ─────────────────────────────────────────────────────────────
 # Wallet routes
 # ─────────────────────────────────────────────────────────────
 
 async def handle_wallet_create(request: web.Request) -> web.Response:
-    """
-    POST /wallet/create
-    Body: { "name": "alice" }
-
-    Generates a new ML-DSA-65 keypair and persists the wallet.
-    Returns the address and public key size.
-    Never returns the private key in any response.
-    """
+    """POST /wallet/create"""
     try:
         body = await request.json()
     except Exception:
@@ -377,30 +398,20 @@ async def handle_wallet_create(request: web.Request) -> web.Response:
 
 
 async def handle_wallet_list(request: web.Request) -> web.Response:
-    """
-    GET /wallet/list
-    All stored wallet names and addresses.
-    """
+    """GET /wallet/list"""
     store   = request.app["wallet_store"]
     names   = store.list_wallets()
     wallets = []
 
     for name in names:
         w = store.get(name)
-        wallets.append({
-            "name"    : name,
-            "address" : w.address
-        })
+        wallets.append({"name": name, "address": w.address})
 
     return ok({"count": len(wallets), "wallets": wallets})
 
 
 async def handle_wallet_get(request: web.Request) -> web.Response:
-    """
-    GET /wallet/{name}
-    Info for a single named wallet.
-    Does not expose the private key.
-    """
+    """GET /wallet/{name}"""
     store  = request.app["wallet_store"]
     name   = request.match_info.get("name", "")
     wallet = store.get(name)
@@ -417,12 +428,7 @@ async def handle_wallet_get(request: web.Request) -> web.Response:
 
 
 async def handle_wallet_balance(request: web.Request) -> web.Response:
-    """
-    GET /wallet/{name}/balance
-    Balance and UTXO count for a named wallet.
-    Uses node 0 as the source of truth.
-    In a consistent network all nodes have the same UTXO set.
-    """
+    """GET /wallet/{name}/balance"""
     store  = request.app["wallet_store"]
     name   = request.match_info.get("name", "")
     wallet = store.get(name)
@@ -449,27 +455,15 @@ async def handle_wallet_balance(request: web.Request) -> web.Response:
 async def handle_tx_send(request: web.Request) -> web.Response:
     """
     POST /tx/send
-    Build, sign, and submit a UTXO-based transaction.
-
     Body:
     {
         "sender"    : "alice",
         "recipient" : "bob",
         "amount"    : 50.0,
-        "fee"       : 0.01,      (optional, defaults to 0.0)
-        "node_port" : 8000       (optional, defaults to first node)
+        "fee"       : 0.01,
+        "node_port" : 8000
     }
-
-    Coin selection is automatic (largest UTXO first).
-    Change is returned to the sender automatically.
-
-    Note on signing model:
-        The server holds private keys and signs on the client's behalf.
-        This is acceptable for a prototype. In production, signing
-        should happen client-side using a dedicated wallet application,
-        and the client should POST the fully signed transaction bytes.
-        That model requires a separate signing library and is out of
-        scope here.
+    fee and node_port are optional.
     """
     try:
         body = await request.json()
@@ -562,12 +556,6 @@ async def handle_tx_send(request: web.Request) -> web.Response:
 # ─────────────────────────────────────────────────────────────
 
 def build_app(nodes: list, wallet_store: WalletStore) -> web.Application:
-    """
-    Construct and configure the aiohttp application.
-
-    Shared state is stored in app[] so every handler can access it
-    without globals. aiohttp passes the app object into every request.
-    """
     app = web.Application()
 
     app["nodes"]        = nodes
@@ -575,28 +563,31 @@ def build_app(nodes: list, wallet_store: WalletStore) -> web.Application:
     app["wallet_store"] = wallet_store
 
     # Network
-    app.router.add_get ("/status",                          handle_network_status)
-    app.router.add_get ("/consensus",                       handle_consensus)
-    app.router.add_get ("/chain/valid",                     handle_chain_valid)
+    app.router.add_get ("/status",                         handle_network_status)
+    app.router.add_get ("/consensus",                      handle_consensus)
+    app.router.add_get ("/chain/valid",                    handle_chain_valid)
 
-    # Node — order matters: more specific routes before less specific
-    app.router.add_get ("/node/{port}/status",              handle_node_status)
-    app.router.add_get ("/node/{port}/chain/height",        handle_node_height)
-    app.router.add_get ("/node/{port}/chain",               handle_node_chain)
-    app.router.add_get ("/node/{port}/block/{index}",       handle_node_block)
-    app.router.add_get ("/node/{port}/mempool",             handle_node_mempool)
-    app.router.add_get ("/node/{port}/balance/{address}",   handle_node_balance)
-    app.router.add_get ("/node/{port}/utxos/size",          handle_utxo_set_size)
-    app.router.add_get ("/node/{port}/utxos/{address}",     handle_node_utxos)
+    # Node — more specific routes must come before less specific ones
+    app.router.add_get ("/node/{port}/status",             handle_node_status)
+    app.router.add_get ("/node/{port}/peers",              handle_peers)
+    app.router.add_post("/node/{port}/peers/add",           handle_add_peer)
+    app.router.add_get ("/node/{port}/chain/height",       handle_node_height)
+    app.router.add_get ("/node/{port}/chain",              handle_node_chain)
+    app.router.add_get ("/node/{port}/block/{index}",      handle_node_block)
+    app.router.add_get ("/node/{port}/mempool",            handle_node_mempool)
+    app.router.add_get ("/node/{port}/balance/{address}",  handle_node_balance)
+    app.router.add_get ("/node/{port}/utxos/size",         handle_utxo_set_size)
+    app.router.add_get ("/node/{port}/utxos/{address}",    handle_node_utxos)
+    app.router.add_post("/node/{port}/mine",               handle_force_mine)
 
-    # Wallet
-    app.router.add_post("/wallet/create",                   handle_wallet_create)
-    app.router.add_get ("/wallet/list",                     handle_wallet_list)
-    app.router.add_get ("/wallet/{name}/balance",           handle_wallet_balance)
-    app.router.add_get ("/wallet/{name}",                   handle_wallet_get)
+    # Wallet — more specific routes before less specific ones
+    app.router.add_post("/wallet/create",                  handle_wallet_create)
+    app.router.add_get ("/wallet/list",                    handle_wallet_list)
+    app.router.add_get ("/wallet/{name}/balance",          handle_wallet_balance)
+    app.router.add_get ("/wallet/{name}",                  handle_wallet_get)
 
     # Transaction
-    app.router.add_post("/tx/send",                         handle_tx_send)
+    app.router.add_post("/tx/send",                        handle_tx_send)
 
     return app
 
@@ -606,13 +597,6 @@ async def start_api(
     host : str = "localhost",
     port : int = 9000
 ) -> web.AppRunner:
-    """
-    Start the aiohttp server inside the existing asyncio event loop.
-
-    Uses AppRunner + TCPSite instead of web.run_app() because
-    web.run_app() blocks and manages its own event loop, which
-    conflicts with the node network already running in ours.
-    """
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host, port)
