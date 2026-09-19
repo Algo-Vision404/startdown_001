@@ -9,14 +9,13 @@ A small blockchain prototype with a websocket node, in-memory peer discovery, an
 
    python -m pip install -r requirements.txt
 
-3. Copy the sample environment file:
+3. Set the ports in PowerShell (the application reads process environment variables directly):
 
-   copy .env.example .env
+   $env:WS_PORT = "8123"
+   $env:PORT = "9010"
 
 4. Start the node:
 
-   set WS_PORT=8123
-   set PORT=9010
    python main.py
 
 5. Check the API:
@@ -39,3 +38,4 @@ A small blockchain prototype with a websocket node, in-memory peer discovery, an
 - Use a free websocket port on Windows if 8000 is already in use.
 - Generated runtime files such as wallet, chain, UTXO, and peer state are stored under data/ and ignored by git.
 - A fresh checkout creates a new miner wallet on first startup; keep data/wallets.json private because it contains wallet keys.
+- `.env.example` documents the available variables, but `.env` files are not loaded automatically; set variables in the shell or configure them in your process manager.

@@ -1,3 +1,4 @@
 cryptography
 websockets
 aiohttp
+liboqs-python
