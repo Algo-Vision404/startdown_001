@@ -446,6 +446,7 @@ async def handle_force_mine(request: web.Request) -> web.Response:
             tx for tx in node.mempool
             if tx.tx_id not in mined_ids
         ]
+        node._recompute_pending_inputs()
 
         await node._broadcast(
             build(MessageType.BLOCK, node.port, serialize_block(block))
