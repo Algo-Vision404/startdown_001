@@ -12,7 +12,7 @@ from Transaction import Transaction
 from utxo import UTXOSet, UTXO
 from message import serialize_block, deserialize_block
 
-import oqs
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
 DEFAULT_DATA_DIR = "data"
@@ -104,7 +104,7 @@ class WalletStore:
                 wallet.public_key  = base64.b64decode(entry["public_key"])
                 wallet.private_key = base64.b64decode(entry["private_key"])
                 wallet.address     = entry["address"]
-                wallet._signer     = oqs.Signature(ALGORITHM, wallet.private_key)
+                wallet._signer     = Ed25519PrivateKey.from_private_bytes(wallet.private_key)
                 self._wallets[name] = wallet
         except Exception as e:
             print(f"could not load wallets: {e}")

@@ -1,11 +1,13 @@
-import oqs
 import hashlib
 import json
 import base64
 import os
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
-ALGORITHM   = "ML-DSA-65"
+
+ALGORITHM   = "Ed25519"
 ADDR_PREFIX = "QR"
 ADDR_LENGTH = 40
 
@@ -33,9 +35,16 @@ class QuantumWallet:
     """
 
     def __init__(self):
-        self._signer     = oqs.Signature(ALGORITHM)
-        self.public_key  = self._signer.generate_keypair()
-        self.private_key = self._signer.export_secret_key()
+        self._signer     = Ed25519PrivateKey.generate()
+        self.private_key = self._signer.private_bytes(
+            serialization.Encoding.Raw,
+            serialization.PrivateFormat.Raw,
+            serialization.NoEncryption()
+        )
+        self.public_key  = self._signer.public_key().public_bytes(
+            serialization.Encoding.Raw,
+            serialization.PublicFormat.Raw
+        )
         self.address     = self._derive_address(self.public_key)
 
     @staticmethod
@@ -79,8 +88,9 @@ class QuantumWallet:
         Never raises   a malformed signature is treated as invalid.
         """
         try:
-            verifier = oqs.Signature(ALGORITHM)
-            return verifier.verify(data, signature, public_key)
+            verifier = Ed25519PublicKey.from_public_bytes(public_key)
+            verifier.verify(signature, data)
+            return True
         except Exception:
             return False
 
@@ -106,7 +116,7 @@ class QuantumWallet:
     def load(cls, filepath: str) -> "QuantumWallet":
         """
         Reconstruct a wallet from a saved JSON file.
-        Re-initializes the liboqs signer with the stored private key.
+        Re-initializes the Ed25519 signer with the stored private key.
         """
         if not os.path.exists(filepath):
             raise WalletError(f"Wallet file not found: {filepath}")
@@ -118,7 +128,7 @@ class QuantumWallet:
         instance.public_key  = base64.b64decode(data["public_key"])
         instance.private_key = base64.b64decode(data["private_key"])
         instance.address     = data["address"]
-        instance._signer     = oqs.Signature(ALGORITHM, instance.private_key)
+        instance._signer     = Ed25519PrivateKey.from_private_bytes(instance.private_key)
 
         return instance
 

@@ -32,7 +32,6 @@ import time
 import base64
 
 from wallet import QuantumWallet, ALGORITHM
-import oqs
 
 
 class TransactionError(Exception):
