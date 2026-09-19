@@ -22,7 +22,7 @@ from aiohttp import web
 
 from node import Node
 from storage import WalletStore
-from transaction import Transaction
+from Transaction import Transaction
 
 
 # ─────────────────────────────────────────────────────────────
