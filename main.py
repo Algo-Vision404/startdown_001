@@ -1,14 +1,11 @@
 # main.py
-#
-# Node 8000 is the bootstrap node.
-# All other nodes only know about 8000 at startup.
-# They discover 8001, 8002, 8003 through peer exchange.
+# Render deployment entry point: one node, no CLI, long-running process.
 
 import asyncio
 import logging
+import os
 
 from node import Node
-from cli import CLI
 from storage import WalletStore
 from api import build_app, start_api
 
@@ -20,72 +17,59 @@ logging.basicConfig(
 )
 
 
-BOOTSTRAP = [{"host": "localhost", "port": 8000}]
-
-PORTS = [8000, 8001, 8002, 8003]
-
-API_HOST = "localhost"
-API_PORT = 9000
+API_PORT = int(os.environ.get("PORT", 9000))
+API_HOST = "0.0.0.0"
+WS_PORT = 8000
+WS_HOST = "0.0.0.0"
+BOOTSTRAP_HOST = os.environ.get("BOOTSTRAP_HOST", "")
+BOOTSTRAP_PORT = int(os.environ.get("BOOTSTRAP_PORT", 8000))
+NODE_NAME = os.environ.get("NODE_NAME", "node")
 
 
 async def main():
+    bootstrap = []
+    if BOOTSTRAP_HOST:
+        bootstrap = [{"host": BOOTSTRAP_HOST, "port": BOOTSTRAP_PORT}]
+        logging.info(f"bootstrap peer: {BOOTSTRAP_HOST}:{BOOTSTRAP_PORT}")
+    else:
+        logging.info("no bootstrap configured - this is the bootstrap node")
 
-    # All nodes point only to the bootstrap node (8000).
-    # 8000 itself has no bootstrap — it is the entry point.
-    nodes = []
-    for port in PORTS:
-        bootstrap = BOOTSTRAP if port != 8000 else []
-        node = Node(
-            host      = "localhost",
-            port      = port,
-            data_dir  = "data",
-            bootstrap = bootstrap
-        )
-        nodes.append(node)
+    node = Node(
+        host=WS_HOST,
+        port=WS_PORT,
+        data_dir="data",
+        bootstrap=bootstrap,
+    )
+    await node.serve()
 
-    # Start all servers first so they are ready to accept connections
-    for node in nodes:
-        await node.serve()
-
-    await asyncio.sleep(0.5)
-
-    # Assign miner wallets
     wallet_store = WalletStore()
+    miner_name = f"miner_{NODE_NAME}"
+    wallet = wallet_store.get(miner_name)
+    if wallet is None:
+        wallet = wallet_store.create(miner_name)
+        logging.info(f"created miner wallet: {wallet.address[:32]}...")
+    else:
+        logging.info(f"loaded miner wallet: {wallet.address[:32]}...")
+    node.miner_address = wallet.address
 
-    for node in nodes:
-        miner_name = f"miner_{node.port}"
-        wallet     = wallet_store.get(miner_name)
-        if wallet is None:
-            wallet = wallet_store.create(miner_name)
-            logging.info(
-                f"created miner wallet for node {node.port}"
-            )
-        node.miner_address = wallet.address
+    await node.start_background_tasks()
 
-    # Start background tasks (peer discovery, pings, saves)
-    for node in nodes:
-        await node.start_background_tasks()
-
-    # Give peer discovery time to run its first pass
-    await asyncio.sleep(2.0)
-
-    # Start REST API
-    app    = build_app(nodes, wallet_store)
+    app = build_app([node], wallet_store)
     runner = await start_api(app, API_HOST, API_PORT)
 
-    print(f"\nREST API   : http://{API_HOST}:{API_PORT}")
-    print(f"Bootstrap  : localhost:8000")
-    print(f"Nodes      : {PORTS}")
-    print(f"Data dir   : data/\n")
+    logging.info(f"{NODE_NAME} fully started")
+    logging.info(f"  REST API  : http://0.0.0.0:{API_PORT}")
+    logging.info(f"  WebSocket : ws://0.0.0.0:{WS_PORT}")
+    logging.info(f"  Bootstrap : {bootstrap or 'none'}")
 
-    cli = CLI(nodes, wallet_store)
-    await cli.run()
-
-    for node in nodes:
+    try:
+        await asyncio.Future()
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        pass
+    finally:
+        logging.info("shutting down...")
         node.close()
-
-    await runner.cleanup()
-    print("done.")
+        await runner.cleanup()
 
 
 if __name__ == "__main__":
