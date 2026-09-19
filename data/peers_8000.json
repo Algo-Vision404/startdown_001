@@ -1,0 +1,29 @@
+[
+  {
+    "host": "localhost",
+    "port": 8002,
+    "state": "connected",
+    "score": 7,
+    "last_seen": 1789815223.4127696,
+    "last_attempted": 0.0,
+    "fail_count": 0
+  },
+  {
+    "host": "localhost",
+    "port": 8001,
+    "state": "connected",
+    "score": 8,
+    "last_seen": 1789815223.4128091,
+    "last_attempted": 0.0,
+    "fail_count": 0
+  },
+  {
+    "host": "localhost",
+    "port": 8003,
+    "state": "connected",
+    "score": 8,
+    "last_seen": 1789815223.4128315,
+    "last_attempted": 0.0,
+    "fail_count": 0
+  }
+]
