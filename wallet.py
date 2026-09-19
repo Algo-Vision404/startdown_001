@@ -5,7 +5,7 @@ import base64
 import os
 
 
-ALGORITHM   = "Dilithium3"
+ALGORITHM   = "ML-DSA-65"
 ADDR_PREFIX = "QR"
 ADDR_LENGTH = 40
 
