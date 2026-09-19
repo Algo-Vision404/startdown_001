@@ -423,6 +423,7 @@ async def handle_force_mine(request: web.Request) -> web.Response:
     if miner_address == "MINER_UNSET":
         return err("node has no miner address configured", 500)
 
+    node.mining = True
     to_mine = list(node.mempool[:node.BLOCK_SIZE])
 
     try:
@@ -469,6 +470,8 @@ async def handle_force_mine(request: web.Request) -> web.Response:
 
     except Exception as e:
         return err(f"mining failed: {e}")
+    finally:
+        node.mining = False
 
 
 # ─────────────────────────────────────────────────────────────

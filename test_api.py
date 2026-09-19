@@ -68,6 +68,16 @@ class FakeRequest:
 
 
 class TestForceMine(unittest.IsolatedAsyncioTestCase):
+    async def test_force_mine_rejects_when_node_is_already_mining(self):
+        block = FakeBlock([])
+        node = FakeNode(block, [])
+        node.mining = True
+
+        response = await api.handle_force_mine(FakeRequest(node))
+
+        self.assertEqual(response.status, 409)
+        self.assertTrue(node.mining)
+
     async def test_force_mine_rebuilds_pending_inputs(self):
         confirmed = FakeTransaction("confirmed", [{"tx_id": "a", "index": 0}])
         remaining = FakeTransaction("remaining", [{"tx_id": "b", "index": 0}])
