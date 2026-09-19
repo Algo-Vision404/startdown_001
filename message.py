@@ -3,7 +3,7 @@
 import json
 import base64
 
-from transaction import Transaction
+from Transaction import Transaction
 from block import Block
 
 

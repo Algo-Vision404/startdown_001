@@ -15,16 +15,17 @@
 #       Print all stored wallet names and their addresses.
 #
 #   wallet balance <name>
-#       Compute the balance of a wallet by scanning the chain.
+#       Compute the balance of a wallet from the UTXO set.
 #
-#   tx send <sender_name> <recipient_name> <amount> [node_port]
-#       Sign and submit a transaction. Defaults to the first node.
+#   tx send <sender_name> <recipient_name> <amount> [fee] [node_port]
+#       Sign and submit a UTXO transfer. Defaults to the first node
+#       and a fee of 0.
 #
 #   chain status
 #       Print height, validity, mempool size, and peers for all nodes.
 #
 #   chain show [node_port]
-#       Print all blocks and their transactions for a specific node.
+#       Print all blocks and a summary of their transactions.
 #
 #   chain verify [node_port]
 #       Run full chain validation and report the result.
@@ -48,11 +49,19 @@ import asyncio
 import sys
 
 from wallet import QuantumWallet
-from Transaction import Transaction
+from Transaction import Transaction, TransactionError
 from storage import WalletStore
 
 
 PROMPT = "qchain> "
+
+
+def _outputs_summary(tx) -> str:
+    """One-line human-readable summary of a transaction's outputs."""
+    if not tx.outputs:
+        return "(no outputs)"
+    parts = [f"{o['address'][:14]}...:{o['amount']}" for o in tx.outputs]
+    return ", ".join(parts)
 
 
 class CLI:
@@ -202,12 +211,12 @@ class CLI:
 
     async def _tx_cmd(self, args: list):
         if not args or args[0].lower() != "send":
-            print("usage: tx send <sender> <recipient> <amount> [node_port]")
+            print("usage: tx send <sender> <recipient> <amount> [fee] [node_port]")
             return
 
         args = args[1:]
         if len(args) < 3:
-            print("usage: tx send <sender> <recipient> <amount> [node_port]")
+            print("usage: tx send <sender> <recipient> <amount> [fee] [node_port]")
             return
 
         sender_name    = args[0]
@@ -219,8 +228,41 @@ class CLI:
             print(f"invalid amount: '{args[2]}'")
             return
 
-        node_port = int(args[3]) if len(args) > 3 else self.nodes[0].port
-        node      = self._node_map.get(node_port)
+        # Optional 4th arg is fee, optional 5th arg is node_port.
+        # Both trailing args are optional so we detect node_port by
+        # checking whether the last token looks like a known port.
+        fee       = 0.0
+        node_port = self.nodes[0].port
+
+        remaining = args[3:]
+        if len(remaining) == 1:
+            # Ambiguous: could be fee or node_port. If it matches a
+            # live node port, treat it as node_port; otherwise it's fee.
+            try:
+                as_int = int(remaining[0])
+            except ValueError:
+                as_int = None
+            if as_int is not None and as_int in self._node_map:
+                node_port = as_int
+            else:
+                try:
+                    fee = float(remaining[0])
+                except ValueError:
+                    print(f"invalid fee: '{remaining[0]}'")
+                    return
+        elif len(remaining) >= 2:
+            try:
+                fee = float(remaining[0])
+            except ValueError:
+                print(f"invalid fee: '{remaining[0]}'")
+                return
+            try:
+                node_port = int(remaining[1])
+            except ValueError:
+                print(f"invalid node_port: '{remaining[1]}'")
+                return
+
+        node = self._node_map.get(node_port)
         if not node:
             print(f"no node on port {node_port}. available: {list(self._node_map.keys())}")
             return
@@ -237,22 +279,34 @@ class CLI:
         if amount <= 0:
             print("amount must be positive.")
             return
+        if fee < 0:
+            print("fee cannot be negative.")
+            return
 
-        tx = Transaction(
-            sender_address    = sender.address,
-            recipient_address = recipient.address,
-            amount            = amount
-        )
-        tx.sign(sender)
+        try:
+            tx = Transaction.transfer(
+                sender_wallet      = sender,
+                utxo_set           = node.chain.utxo_set,
+                recipient_address  = recipient.address,
+                amount             = amount,
+                fee                = fee
+            )
+        except TransactionError as e:
+            print(f"error: {e}")
+            return
 
         await node.submit_transaction(tx)
 
         print(f"transaction submitted to node {node_port}")
-        print(f"  tx_id     : {tx.tx_id[:32]}...")
-        print(f"  from      : {sender_name} ({sender.address[:24]}...)")
-        print(f"  to        : {recipient_name} ({recipient.address[:24]}...)")
-        print(f"  amount    : {amount}")
-        print(f"  sig_bytes : {len(tx.signature)}")
+        print(f"  tx_id       : {tx.tx_id[:32]}...")
+        print(f"  from        : {sender_name} ({sender.address[:24]}...)")
+        print(f"  to          : {recipient_name} ({recipient.address[:24]}...)")
+        print(f"  amount      : {amount}")
+        print(f"  fee         : {fee}")
+        print(f"  inputs used : {len(tx.inputs)}")
+        print(f"  outputs     : {_outputs_summary(tx)}")
+        print(f"  sig_bytes   : {len(tx.signature)}")
+        print(f"  valid       : {tx.is_valid()}")
 
     # ─────────────────────────────────────────────────────────
     # Chain commands
@@ -294,11 +348,13 @@ class CLI:
                 print(repr(block))
                 if block.transactions:
                     for tx in block.transactions:
+                        kind = "COINBASE" if tx.is_coinbase else tx.sender[:18] + "..."
                         print(
                             f"   {tx.tx_id[:20]}...  "
-                            f"{tx.sender[:18]}... -> "
-                            f"{tx.recipient[:18]}...  "
-                            f"amount={tx.amount}"
+                            f"from={kind}  "
+                            f"inputs={len(tx.inputs)}  "
+                            f"outputs=[{_outputs_summary(tx)}]  "
+                            f"fee={tx.fee}"
                         )
                 else:
                     print("   (no transactions — genesis block)")
@@ -347,24 +403,26 @@ class CLI:
 
         block = node.chain.chain[index]
         print(f"\nblock {block.index}")
-        print(f"  hash           : {block.hash}")
-        print(f"  previous_hash  : {block.previous_hash}")
-        print(f"  nonce          : {block.nonce}")
-        print(f"  timestamp      : {block.timestamp}")
-        print(f"  transactions   : {block.transaction_count()}")
+        print(f"  hash             : {block.hash}")
+        print(f"  previous_hash    : {block.previous_hash}")
+        print(f"  nonce            : {block.nonce}")
+        print(f"  timestamp        : {block.timestamp}")
+        print(f"  transactions     : {block.transaction_count()}")
         print(f"  internally valid : {block.is_internally_valid()}")
 
         if block.transactions:
             print()
             for i, tx in enumerate(block.transactions):
                 print(f"  tx[{i}]")
-                print(f"    tx_id      : {tx.tx_id}")
-                print(f"    sender     : {tx.sender}")
-                print(f"    recipient  : {tx.recipient}")
-                print(f"    amount     : {tx.amount}")
-                print(f"    timestamp  : {tx.timestamp}")
-                print(f"    sig_bytes  : {len(tx.signature)}")
-                print(f"    valid      : {tx.is_valid()}")
+                print(f"    tx_id       : {tx.tx_id}")
+                print(f"    is_coinbase : {tx.is_coinbase}")
+                print(f"    sender      : {tx.sender}")
+                print(f"    inputs      : {tx.inputs}")
+                print(f"    outputs     : {tx.outputs}")
+                print(f"    fee         : {tx.fee}")
+                print(f"    timestamp   : {tx.timestamp}")
+                print(f"    sig_bytes   : {len(tx.signature)}")
+                print(f"    valid       : {tx.is_valid()}")
 
     # ─────────────────────────────────────────────────────────
     # Mempool command
@@ -382,14 +440,15 @@ class CLI:
             return
 
         print(f"\nnode {node_port} mempool  ({len(node.mempool)} pending)\n")
-        print(f"{'TX_ID':<24} {'SENDER':<22} {'RECIPIENT':<22} {'AMOUNT'}")
-        print("─" * 80)
+        print(f"{'TX_ID':<24} {'SENDER':<22} {'FEE':<10} OUTPUTS")
+        print("─" * 100)
         for tx in node.mempool:
+            sender_disp = "COINBASE" if tx.is_coinbase else tx.sender[:20]
             print(
                 f"{tx.tx_id[:22]:<24} "
-                f"{tx.sender[:20]:<22} "
-                f"{tx.recipient[:20]:<22} "
-                f"{tx.amount}"
+                f"{sender_disp:<22} "
+                f"{tx.fee:<10} "
+                f"{_outputs_summary(tx)}"
             )
 
     # ─────────────────────────────────────────────────────────
@@ -434,7 +493,7 @@ commands:
   wallet balance <name>                      show wallet balance
 
   tx send <sender> <recipient> <amount>      submit a transaction
-         [node_port]                         optional: which node receives it
+         [fee] [node_port]                   both trailing args optional
 
   chain status                               all node heights, peers, mempool sizes
   chain show [node_port]                     print full chain with transactions

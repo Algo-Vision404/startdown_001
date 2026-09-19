@@ -239,6 +239,109 @@ async def handle_node_block(request: web.Request) -> web.Response:
     return ok(format_block(node.chain.chain[index]))
 
 
+async def handle_merkle_root(request: web.Request) -> web.Response:
+    """GET /node/{port}/block/{index}/merkle"""
+    node = node_from_request(request)
+    if not node:
+        return err("node not found", 404)
+
+    try:
+        index = int(request.match_info["index"])
+    except ValueError:
+        return err("block index must be an integer")
+
+    if index < 0 or index >= node.chain.height():
+        return err(f"block {index} does not exist", 404)
+
+    block = node.chain.chain[index]
+    return ok({
+        "block_index": block.index,
+        "block_hash": block.hash,
+        "merkle_root": block.merkle_root,
+        "tx_count": block.transaction_count(),
+        "tree": block._merkle_tree.to_dict(),
+    })
+
+
+async def handle_merkle_proof(request: web.Request) -> web.Response:
+    """GET /node/{port}/block/{index}/proof/{tx_index}"""
+    node = node_from_request(request)
+    if not node:
+        return err("node not found", 404)
+
+    try:
+        block_index = int(request.match_info["index"])
+        tx_index = int(request.match_info["tx_index"])
+    except ValueError:
+        return err("block index and tx index must be integers")
+
+    if block_index < 0 or block_index >= node.chain.height():
+        return err(f"block {block_index} does not exist", 404)
+
+    block = node.chain.chain[block_index]
+    proof_data = block.merkle_proof(tx_index)
+    if proof_data is None:
+        return err(
+            f"tx index {tx_index} out of range. "
+            f"block has {block.transaction_count()} transactions",
+            404,
+        )
+
+    return ok(proof_data)
+
+
+async def handle_verify_proof(request: web.Request) -> web.Response:
+    """POST /merkle/verify"""
+    try:
+        body = await request.json()
+    except Exception:
+        return err("request body must be valid JSON")
+
+    tx_hash = body.get("tx_hash", "").strip()
+    proof = body.get("proof")
+    root = body.get("merkle_root", "").strip()
+
+    if not tx_hash:
+        return err("'tx_hash' is required")
+    if proof is None:
+        return err("'proof' is required")
+    if not root:
+        return err("'merkle_root' is required")
+    if not isinstance(proof, list):
+        return err("'proof' must be a list")
+
+    from merkle import MerkleTree
+
+    try:
+        valid = MerkleTree.verify_proof(tx_hash, proof, root)
+    except Exception as error:
+        return err(f"proof verification failed: {error}")
+
+    return ok({
+        "valid": valid,
+        "tx_hash": tx_hash,
+        "merkle_root": root,
+        "proof_steps": len(proof),
+    })
+
+
+async def handle_block_header(request: web.Request) -> web.Response:
+    """GET /node/{port}/block/{index}/header"""
+    node = node_from_request(request)
+    if not node:
+        return err("node not found", 404)
+
+    try:
+        index = int(request.match_info["index"])
+    except ValueError:
+        return err("block index must be an integer")
+
+    if index < 0 or index >= node.chain.height():
+        return err(f"block {index} does not exist", 404)
+
+    return ok(node.chain.chain[index].header())
+
+
 async def handle_node_mempool(request: web.Request) -> web.Response:
     """GET /node/{port}/mempool"""
     node = node_from_request(request)
@@ -574,6 +677,9 @@ def build_app(nodes: list, wallet_store: WalletStore) -> web.Application:
     app.router.add_get ("/node/{port}/chain/height",       handle_node_height)
     app.router.add_get ("/node/{port}/chain",              handle_node_chain)
     app.router.add_get ("/node/{port}/block/{index}",      handle_node_block)
+    app.router.add_get ("/node/{port}/block/{index}/header", handle_block_header)
+    app.router.add_get ("/node/{port}/block/{index}/merkle", handle_merkle_root)
+    app.router.add_get ("/node/{port}/block/{index}/proof/{tx_index}", handle_merkle_proof)
     app.router.add_get ("/node/{port}/mempool",            handle_node_mempool)
     app.router.add_get ("/node/{port}/balance/{address}",  handle_node_balance)
     app.router.add_get ("/node/{port}/utxos/size",         handle_utxo_set_size)
@@ -588,6 +694,7 @@ def build_app(nodes: list, wallet_store: WalletStore) -> web.Application:
 
     # Transaction
     app.router.add_post("/tx/send",                        handle_tx_send)
+    app.router.add_post("/merkle/verify",                   handle_verify_proof)
 
     return app
 

@@ -64,6 +64,89 @@ class Blockchain:
         self.chain.append(genesis)
 
     # ─────────────────────────────────────────────────────────
+    # Transaction sequence validation
+    # ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    def validate_transaction_sequence(transactions: list, utxo_set: UTXOSet) -> bool:
+        """
+        Validate a list of transactions as they would apply IN ORDER to a
+        single block, without mutating the real UTXO set.
+
+        This exists because validating each transaction independently
+        against a static UTXO set snapshot is NOT sufficient: two
+        transactions in the same block could both reference the same
+        unspent input, and both would pass an independent check since
+        neither one has "spent" it yet from the snapshot's point of view.
+        That is a double-spend within a single block, and it lets a
+        transaction's outputs get created without a real backing input.
+
+        This method tracks, locally to this call only:
+            - which (tx_id, index) keys have already been consumed by an
+              earlier transaction in this same sequence
+            - which outputs were newly created by an earlier transaction
+              in this same sequence (so legitimate same-block chained
+              transactions, e.g. spending a coinbase output right away,
+              still work)
+
+        Returns True only if every transaction in the sequence is valid
+        and no two transactions conflict on the same input.
+        """
+        locally_spent = set()   # (tx_id, index) consumed earlier in this sequence
+        locally_added = {}      # (tx_id, index) -> UTXO created earlier in this sequence
+
+        for tx in transactions:
+            if tx.is_coinbase:
+                for i, out in enumerate(tx.outputs):
+                    locally_added[(tx.tx_id, i)] = UTXO(
+                        tx.tx_id, i, out["address"], out["amount"]
+                    )
+                continue
+
+            if not tx.inputs or not tx.outputs:
+                return False
+
+            input_keys = [(i["tx_id"], i["index"]) for i in tx.inputs]
+
+            # No duplicate inputs within the transaction itself
+            if len(input_keys) != len(set(input_keys)):
+                return False
+
+            input_total = 0.0
+            for key in input_keys:
+                # Double-spend against an earlier transaction in this block
+                if key in locally_spent:
+                    return False
+
+                if key in locally_added:
+                    utxo = locally_added[key]
+                else:
+                    utxo = utxo_set.get(*key)
+
+                if utxo is None or utxo.address != tx.sender:
+                    return False
+
+                input_total += utxo.amount
+
+            output_total = sum(o["amount"] for o in tx.outputs)
+            if input_total < output_total:
+                return False
+
+            if not tx.is_valid():
+                return False
+
+            for key in input_keys:
+                locally_spent.add(key)
+                locally_added.pop(key, None)
+
+            for i, out in enumerate(tx.outputs):
+                locally_added[(tx.tx_id, i)] = UTXO(
+                    tx.tx_id, i, out["address"], out["amount"]
+                )
+
+        return True
+
+    # ─────────────────────────────────────────────────────────
     # Mining
     # ─────────────────────────────────────────────────────────
 
@@ -90,12 +173,13 @@ class Blockchain:
         This is a protocol convention that every node relies on when
         parsing blocks — block.transactions[0] is always the coinbase.
         """
-        # Validate all non-coinbase transactions
-        for tx in transactions:
-            if not tx.validate_against_utxo_set(self.utxo_set):
-                raise ChainError(
-                    f"invalid transaction: {tx.tx_id[:16]}"
-                )
+        # Validate the whole batch together (catches double-spends across
+        # transactions in this same block, not just against confirmed UTXOs)
+        if not self.validate_transaction_sequence(transactions, self.utxo_set):
+            raise ChainError(
+                "invalid transaction set: a transaction failed validation "
+                "or two transactions conflict on the same input (double-spend)"
+            )
 
         # Compute total fees
         total_fees = sum(tx.fee for tx in transactions)

@@ -8,7 +8,7 @@ import websockets
 
 from chain import Blockchain, ChainError
 from block import Block
-from transaction import Transaction
+from Transaction import Transaction
 from storage import ChainStore
 from peer_manager import PeerManager, PeerState
 from message import (
@@ -47,6 +47,11 @@ class Node:
         self.mempool       : list[Transaction] = []
         self.seen_tx_ids   : set = set()
         self.seen_block_hashes : set = set()
+
+        # (tx_id, index) keys currently spent by a pending mempool transaction.
+        # Used to reject a new transaction that conflicts with one already
+        # sitting in the mempool (a double-spend attempt before confirmation).
+        self.pending_inputs : set = set()
 
         # port -> websocket for active connections
         self.peers         : dict[int, any] = {}
@@ -399,6 +404,30 @@ class Node:
             await self._connect_to_candidates()
 
     # ─────────────────────────────────────────────────────────
+    # Mempool helpers
+    # ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _input_keys(tx: Transaction) -> set:
+        if tx.is_coinbase:
+            return set()
+        return {(i["tx_id"], i["index"]) for i in tx.inputs}
+
+    def _recompute_pending_inputs(self) -> None:
+        """
+        Rebuild self.pending_inputs from the current mempool contents.
+
+        Called whenever the mempool is filtered (a block confirmed some
+        of its transactions, locally or from a peer). This keeps the
+        mempool-level double-spend guard in sync with what is actually
+        still pending, without needing to track removals one at a time.
+        """
+        pending = set()
+        for tx in self.mempool:
+            pending |= self._input_keys(tx)
+        self.pending_inputs = pending
+
+    # ─────────────────────────────────────────────────────────
     # Transaction handling
     # ─────────────────────────────────────────────────────────
 
@@ -419,6 +448,19 @@ class Node:
                     f"UTXO validation failed"
                 )
                 return
+
+            # Reject if this transaction's inputs conflict with a
+            # transaction already sitting in the mempool (first-seen wins).
+            keys = self._input_keys(tx)
+            if keys & self.pending_inputs:
+                logging.warning(
+                    f"[{self.port}] rejected tx {tx.tx_id[:16]}: "
+                    f"conflicts with a pending mempool transaction "
+                    f"(double-spend attempt)"
+                )
+                return
+
+            self.pending_inputs |= keys
 
         self.seen_tx_ids.add(tx.tx_id)
         self.mempool.append(tx)
@@ -474,6 +516,20 @@ class Node:
                     )
                     return
 
+            # Validate the whole transaction set together. Per-transaction
+            # signature checks above do not catch two transactions in the
+            # same block spending the same input (a double-spend) — this
+            # does, by replaying the block's transactions against the
+            # confirmed UTXO set in order.
+            if not Blockchain.validate_transaction_sequence(
+                block.transactions, self.chain.utxo_set
+            ):
+                logging.warning(
+                    f"[{self.port}] block {block.index} rejected: "
+                    f"conflicting/double-spend transactions"
+                )
+                return
+
             self.chain.append_block(block)
             self._save_chain()
 
@@ -482,6 +538,7 @@ class Node:
                 tx for tx in self.mempool
                 if tx.tx_id not in confirmed_ids
             ]
+            self._recompute_pending_inputs()
 
             logging.info(
                 f"[{self.port}] appended block {block.index} "
@@ -521,6 +578,19 @@ class Node:
             old_height = self.chain.height()
             self.chain = candidate
             self._save_chain()
+
+            # Drop any mempool transactions confirmed on the adopted chain,
+            # and resync the double-spend guard to the new chain state.
+            confirmed_ids = {
+                tx.tx_id
+                for block in self.chain.chain
+                for tx in block.transactions
+            }
+            self.mempool = [
+                tx for tx in self.mempool
+                if tx.tx_id not in confirmed_ids
+            ]
+            self._recompute_pending_inputs()
 
             logging.info(
                 f"[{self.port}] adopted longer chain "
@@ -563,6 +633,7 @@ class Node:
                 tx for tx in self.mempool
                 if tx.tx_id not in mined_ids
             ]
+            self._recompute_pending_inputs()
 
             reward = (
                 block.transactions[0].total_output()
