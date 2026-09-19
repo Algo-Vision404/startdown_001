@@ -176,6 +176,16 @@ class TestMainConfig(unittest.TestCase):
             else:
                 os.environ.pop("PORT", None)
 
+    def test_wallet_signing_and_verification_roundtrip(self):
+        from wallet import QuantumWallet
+
+        wallet = QuantumWallet()
+        payload = b"hello blockchain"
+        signature = wallet.sign(payload)
+
+        self.assertTrue(QuantumWallet.verify(payload, signature, wallet.public_key))
+        self.assertNotEqual(signature, b"")
+
 
 if __name__ == "__main__":
     unittest.main()
