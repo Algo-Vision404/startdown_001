@@ -1,26 +1,8 @@
 {
-  "miner_8000": {
-    "algorithm": "Ed25519",
-    "address": "QR_2BBF905AA05CF308D26BBCBDF02A5E1CB8C0C6E5",
-    "public_key": "SXxbEPNrsHiCy2pnmYrH2XRHrrwoO2NIUMkon3RPhLo=",
-    "private_key": "IA6F19EvhRqFPkkkxgGjiiEiFmmX0HTbeLR+mT5QipE="
-  },
-  "miner_8001": {
-    "algorithm": "Ed25519",
-    "address": "QR_10130284F2F45953FBABA48574121CFD7613A1B7",
-    "public_key": "yfgtZ8Y+qKebuVf6rNjlTGV9yDFOfFrVEvCneHfFy3k=",
-    "private_key": "wy9Gnsk07TQRQ54gRPqz+BwD7KA7u6EyTy148sPf7Kk="
-  },
-  "miner_8002": {
-    "algorithm": "Ed25519",
-    "address": "QR_6B5E27DF29462CB9AFF1B9677822F47F82430DE0",
-    "public_key": "QW1KAta54NW/hxWMCTfwZ9J3awqKFL/Sj7jrQ0mkKIc=",
-    "private_key": "d/vxu2ypDF1hSotGTOsBQe3J0v3LOt03PLz9SV34z1I="
-  },
-  "miner_8003": {
-    "algorithm": "Ed25519",
-    "address": "QR_093C78877C971EC3E7E424D02AB70A456CB96FF2",
-    "public_key": "Na5l16Gst21riR7W+p8LVoC9oOZtzG0+N2N/1HAa/Po=",
-    "private_key": "FdqlwFTVFSpQC8tODVmvLmprvZan8luc5IKDSdOtyt8="
+  "miner_node": {
+    "algorithm": "ML-DSA-65",
+    "address": "QR_7BC4C7B6E50855E50B232FF939A58C13ADB50C9C",
+    "public_key": "2R6DOkqlmofD96HcsF4p7ZgkJRM4euawvkQ3+hGKWtY=",
+    "private_key": "/pxhr1MvYoG0Sb14f91gyqnhcp06qI01ZX0reuY9mSQ="
   }
 }
