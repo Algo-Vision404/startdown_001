@@ -1,7 +1,7 @@
 import json
 
 from block import Block
-from transaction import Transaction
+from Transaction import Transaction
 
 
 class ChainError(Exception):
@@ -39,7 +39,7 @@ class Blockchain:
         DIFFICULTY = 4 means the hash must start with "0000".
         Each additional zero multiplies the expected work by 16.
         At difficulty 4, a modern CPU finds a valid nonce in roughly
-        100–500ms, which is intentional for a prototype.
+        100-500ms, which is intentional for a prototype.
     """
 
     DIFFICULTY = 4
@@ -82,32 +82,55 @@ class Blockchain:
     def _last_block(self) -> Block:
         return self.chain[-1]
 
-    def add_block(self, transactions: list) -> Block:
-        """
-        Validate a set of transactions, mine a new block, and append it.
-
-        Validation happens before mining. There is no point spending
-        compute on a block that would be rejected anyway.
-
-        Raises ChainError if any transaction fails signature verification.
-        """
+    def _validate_transactions(self, transactions: list) -> None:
         for tx in transactions:
             if not tx.is_valid():
                 raise ChainError(
-                    f"Block rejected: invalid transaction detected.\n"
+                    f"Block rejected: invalid transaction.\n"
                     f"  tx_id  : {tx.tx_id}\n"
                     f"  sender : {tx.sender}"
                 )
 
-        new_block = Block(
+    def mine_block(self, transactions: list) -> Block:
+        """
+        Validate transactions and mine a block without appending it.
+
+        This separation exists so the node can run mining in a thread
+        executor without blocking the async event loop, then append
+        the result in the main thread once mining completes.
+
+        Reads the current chain tip at call time. If the tip changes
+        while mining (because a peer broadcast a block), the caller
+        is responsible for detecting the stale result and discarding it.
+        """
+        self._validate_transactions(transactions)
+
+        block = Block(
             index         = len(self.chain),
             transactions  = transactions,
             previous_hash = self._last_block().hash
         )
+        self._mine(block)
+        return block
 
-        self._mine(new_block)
-        self.chain.append(new_block)
-        return new_block
+    def append_block(self, block: Block) -> None:
+        """
+        Append a pre-validated block received from a peer.
+
+        The caller must perform all validation before calling this.
+        This method does not re-validate — it trusts the caller.
+        Used by the node when accepting a peer's mined block.
+        """
+        self.chain.append(block)
+
+    def add_block(self, transactions: list) -> Block:
+        """
+        Mine and append a block in one call.
+        Convenience wrapper used in single-node contexts.
+        """
+        block = self.mine_block(transactions)
+        self.append_block(block)
+        return block
 
     def is_valid(self) -> bool:
         """
@@ -118,14 +141,11 @@ class Blockchain:
         integrity is still checked.
 
         Returns True only if every check passes for every block.
-        Prints the specific failure before returning False so the
-        caller knows exactly where the chain broke.
         """
         for i in range(1, len(self.chain)):
             current  = self.chain[i]
             previous = self.chain[i - 1]
 
-            # Invariant 1: internal integrity
             if not current.is_internally_valid():
                 print(
                     f"Integrity failure at block {i}: "
@@ -133,7 +153,6 @@ class Blockchain:
                 )
                 return False
 
-            # Invariant 2: chain linkage
             if current.previous_hash != previous.hash:
                 print(
                     f"Linkage failure at block {i}: "
@@ -141,7 +160,6 @@ class Blockchain:
                 )
                 return False
 
-            # Invariant 3: transaction signatures
             for tx in current.transactions:
                 if not tx.is_valid():
                     print(
@@ -153,13 +171,6 @@ class Blockchain:
         return True
 
     def tamper(self, block_index: int, field: str, value) -> None:
-        """
-        Directly modify a block field without updating the hash.
-
-        This method exists only for testing. It simulates an attacker
-        who edits raw chain data. Calling is_valid() after tamper()
-        should always return False.
-        """
         if block_index >= len(self.chain):
             raise ChainError(f"No block at index {block_index}.")
         setattr(self.chain[block_index], field, value)
