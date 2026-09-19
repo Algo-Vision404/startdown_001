@@ -4,6 +4,7 @@
 import asyncio
 import logging
 import os
+import socket
 
 from node import Node
 from storage import WalletStore
@@ -17,10 +18,26 @@ logging.basicConfig(
 )
 
 
-API_PORT = int(os.environ.get("PORT", 9000))
-API_HOST = "0.0.0.0"
-WS_PORT = 8000
-WS_HOST = "0.0.0.0"
+def _free_port(default_port: int) -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("0.0.0.0", default_port))
+        return sock.getsockname()[1]
+
+
+def _port_from_env(env_var: str, default_port: int) -> int:
+    value = os.environ.get(env_var)
+    if value is not None:
+        return int(value)
+    try:
+        return _free_port(default_port)
+    except OSError:
+        return default_port
+
+
+API_PORT = _port_from_env("API_PORT", 9000)
+API_HOST = os.environ.get("API_HOST", "0.0.0.0")
+WS_PORT = _port_from_env("WS_PORT", 8000)
+WS_HOST = os.environ.get("WS_HOST", "0.0.0.0")
 BOOTSTRAP_HOST = os.environ.get("BOOTSTRAP_HOST", "")
 BOOTSTRAP_PORT = int(os.environ.get("BOOTSTRAP_PORT", 8000))
 NODE_NAME = os.environ.get("NODE_NAME", "node")

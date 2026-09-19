@@ -2,3 +2,5 @@ __pycache__/
 *.py[cod]
 
 alice.json
+# generated runtime data
+data/*.json
