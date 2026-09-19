@@ -23,7 +23,7 @@ def _find_free_port(start_port: int, max_tries: int = 50) -> int:
         port = start_port + offset
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.bind(("127.0.0.1", port))
+                sock.bind(("0.0.0.0", port))
             return port
         except OSError:
             continue
@@ -36,7 +36,7 @@ def _port_from_env(env_var: str, default_port: int, fallback_env_var: str | None
         requested_port = int(value)
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.bind(("127.0.0.1", requested_port))
+                sock.bind(("0.0.0.0", requested_port))
             return requested_port
         except OSError:
             return _find_free_port(requested_port)
@@ -46,7 +46,7 @@ def _port_from_env(env_var: str, default_port: int, fallback_env_var: str | None
             requested_port = int(fallback)
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                    sock.bind(("127.0.0.1", requested_port))
+                    sock.bind(("0.0.0.0", requested_port))
                 return requested_port
             except OSError:
                 return _find_free_port(requested_port)
