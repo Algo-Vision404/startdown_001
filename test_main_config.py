@@ -15,7 +15,7 @@ class TestMainConfig(unittest.TestCase):
             import main
             importlib.reload(main)
             self.assertEqual(main.WS_PORT, 8123)
-            self.assertEqual(main.API_PORT, 9000)
+            self.assertGreaterEqual(main.API_PORT, 9000)
         finally:
             if old_ws is None:
                 os.environ.pop("WS_PORT", None)
@@ -87,6 +87,37 @@ class TestMainConfig(unittest.TestCase):
                 os.environ["PORT"] = old_port
             import main
             importlib.reload(main)
+
+    def test_find_free_port_skips_occupied_ports(self):
+        import main
+
+        real_socket = main.socket.socket
+
+        class FakeSocket:
+            def __init__(self, *args, **kwargs):
+                self.bind_calls = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def bind(self, address):
+                self.bind_calls += 1
+                if address[1] == 9000:
+                    raise OSError("occupied")
+                if address[1] == 9001:
+                    return
+                raise OSError("unexpected")
+
+        main.socket.socket = FakeSocket
+        try:
+            picked = main._port_from_env("WS_PORT", 9000)
+            self.assertEqual(picked, 9001)
+            self.assertGreaterEqual(picked, 9000)
+        finally:
+            main.socket.socket = real_socket
 
 
 if __name__ == "__main__":

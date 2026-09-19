@@ -18,22 +18,40 @@ logging.basicConfig(
 )
 
 
-def _free_port(default_port: int) -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("0.0.0.0", default_port))
-        return sock.getsockname()[1]
+def _find_free_port(start_port: int, max_tries: int = 50) -> int:
+    for offset in range(max_tries):
+        port = start_port + offset
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.bind(("127.0.0.1", port))
+            return port
+        except OSError:
+            continue
+    raise OSError(f"no free port found starting from {start_port}")
 
 
 def _port_from_env(env_var: str, default_port: int, fallback_env_var: str | None = None) -> int:
     value = os.environ.get(env_var)
     if value is not None:
-        return int(value)
+        requested_port = int(value)
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.bind(("127.0.0.1", requested_port))
+            return requested_port
+        except OSError:
+            return _find_free_port(requested_port)
     if fallback_env_var is not None:
         fallback = os.environ.get(fallback_env_var)
         if fallback is not None:
-            return int(fallback)
+            requested_port = int(fallback)
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                    sock.bind(("127.0.0.1", requested_port))
+                return requested_port
+            except OSError:
+                return _find_free_port(requested_port)
     try:
-        return _free_port(default_port)
+        return _find_free_port(default_port)
     except OSError:
         return default_port
 
