@@ -1,26 +1,4 @@
-# storage.py
-#
-# Persistent storage for chain state and wallets.
-#
-# Everything is written to disk as JSON. This means the chain
-# survives a process restart. On startup, the node loads its
-# previous chain from disk rather than starting from genesis.
-#
-# Two storage targets:
-#
-#   ChainStore   -- reads and writes the full blockchain
-#   WalletStore  -- reads and writes named wallets
-#
-# File layout (all relative to a configurable data directory):
-#
-#   {data_dir}/chain_{port}.json     -- chain for a specific node port
-#   {data_dir}/wallets.json          -- all named wallets
-#
-# Atomicity:
-#   Writes go to a temporary file first, then the file is renamed
-#   over the target. On all major operating systems, rename is an
-#   atomic filesystem operation. This prevents a crash mid-write
-#   from leaving a corrupt or partial file on disk.
+# storage.py — updated to persist UTXO set alongside the chain
 
 import json
 import os
@@ -30,13 +8,9 @@ import tempfile
 from chain import Blockchain
 from block import Block
 from wallet import QuantumWallet, ALGORITHM
-from Transaction import Transaction
-from message import (
-    serialize_block,
-    deserialize_block,
-    serialize_transaction,
-    deserialize_transaction
-)
+from transaction import Transaction
+from utxo import UTXOSet, UTXO
+from message import serialize_block, deserialize_block
 
 import oqs
 
@@ -49,108 +23,69 @@ def _ensure_dir(path: str) -> None:
 
 
 def _atomic_write(filepath: str, content: str) -> None:
-    """
-    Write content to filepath atomically.
-
-    Writes to a temp file in the same directory, then renames.
-    The rename replaces the target file in a single filesystem
-    operation, so a concurrent reader will always see either the
-    old complete file or the new complete file, never a partial write.
-    """
     dirpath = os.path.dirname(filepath) or "."
-    fd, tmp_path = tempfile.mkstemp(dir=dirpath, suffix=".tmp")
+    fd, tmp = tempfile.mkstemp(dir=dirpath, suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as f:
             f.write(content)
-        os.replace(tmp_path, filepath)
+        os.replace(tmp, filepath)
     except Exception:
-        os.unlink(tmp_path)
+        os.unlink(tmp)
         raise
 
 
-# ─────────────────────────────────────────────────────────────
-# Chain storage
-# ─────────────────────────────────────────────────────────────
-
 class ChainStore:
-    """
-    Saves and loads a Blockchain to/from a JSON file.
-
-    Each node has its own chain file identified by its port number.
-    On startup, call load() to restore the previous chain state.
-    Call save() after every block append to keep the file current.
-    """
 
     def __init__(self, port: int, data_dir: str = DEFAULT_DATA_DIR):
         _ensure_dir(data_dir)
-        self.filepath = os.path.join(data_dir, f"chain_{port}.json")
+        self.chain_path = os.path.join(data_dir, f"chain_{port}.json")
+        self.utxo_path  = os.path.join(data_dir, f"utxo_{port}.json")
 
     def save(self, chain: Blockchain) -> None:
-        """
-        Serialize the full chain to disk.
+        """Save chain and UTXO set atomically."""
+        chain_data = [serialize_block(b) for b in chain.chain]
+        _atomic_write(self.chain_path, json.dumps(chain_data, indent=2))
 
-        Each block is serialized with full transaction data including
-        signatures, so the chain can be fully re-validated after loading.
-        """
-        data = [serialize_block(b) for b in chain.chain]
-        _atomic_write(self.filepath, json.dumps(data, indent=2))
+        utxo_data = chain.utxo_set.to_dict()
+        _atomic_write(self.utxo_path, json.dumps(utxo_data, indent=2))
 
     def load(self) -> Blockchain | None:
-        """
-        Load a chain from disk.
-
-        Returns a Blockchain if a valid file exists, None otherwise.
-        Validation is performed after loading — if the stored chain
-        fails validation it is discarded and None is returned so the
-        caller falls back to starting fresh from genesis.
-
-        Returns None (not an exception) on any failure so callers
-        can always fall back to a fresh chain without extra error
-        handling.
-        """
-        if not os.path.exists(self.filepath):
+        if not os.path.exists(self.chain_path):
             return None
 
         try:
-            with open(self.filepath, "r") as f:
-                data = json.load(f)
+            with open(self.chain_path, "r") as f:
+                chain_data = json.load(f)
 
-            candidate       = Blockchain.__new__(Blockchain)
-            candidate.chain = [deserialize_block(b) for b in data]
+            candidate          = Blockchain.__new__(Blockchain)
+            candidate.chain    = [deserialize_block(b) for b in chain_data]
+
+            # Load UTXO set if it exists, otherwise rebuild from chain
+            if os.path.exists(self.utxo_path):
+                with open(self.utxo_path, "r") as f:
+                    utxo_data = json.load(f)
+                candidate.utxo_set = UTXOSet.from_dict(utxo_data)
+            else:
+                # Rebuild UTXO set by replaying the chain
+                candidate.utxo_set = UTXOSet()
+                for block in candidate.chain:
+                    candidate.utxo_set.apply_block(block)
 
             if not candidate.is_valid():
-                print(f"stored chain at {self.filepath} failed validation, starting fresh")
+                print(f"stored chain failed validation, starting fresh")
                 return None
 
             return candidate
 
         except Exception as e:
-            print(f"could not load chain from {self.filepath}: {e}, starting fresh")
+            print(f"could not load chain: {e}, starting fresh")
             return None
 
     def exists(self) -> bool:
-        return os.path.exists(self.filepath)
+        return os.path.exists(self.chain_path)
 
-
-# ─────────────────────────────────────────────────────────────
-# Wallet storage
-# ─────────────────────────────────────────────────────────────
 
 class WalletStore:
-    """
-    Saves and loads named wallets to/from a single JSON file.
-
-    Wallets are stored as a dict keyed by name:
-        {
-            "alice" : { "algorithm": ..., "address": ..., "public_key": ..., "private_key": ... },
-            "bob"   : { ... }
-        }
-
-    Private keys are stored in plaintext for prototype purposes.
-    In production, derive an encryption key from a passphrase using
-    Argon2id and encrypt each private key with AES-256-GCM before
-    writing. Add a "salt" and "nonce" field per wallet entry.
-    """
 
     def __init__(self, data_dir: str = DEFAULT_DATA_DIR):
         _ensure_dir(data_dir)
@@ -172,7 +107,7 @@ class WalletStore:
                 wallet._signer     = oqs.Signature(ALGORITHM, wallet.private_key)
                 self._wallets[name] = wallet
         except Exception as e:
-            print(f"could not load wallets from {self.filepath}: {e}")
+            print(f"could not load wallets: {e}")
 
     def _persist(self) -> None:
         raw = {}
@@ -186,10 +121,6 @@ class WalletStore:
         _atomic_write(self.filepath, json.dumps(raw, indent=2))
 
     def create(self, name: str) -> QuantumWallet:
-        """
-        Generate a new wallet, store it under name, and persist.
-        Raises ValueError if the name is already taken.
-        """
         if name in self._wallets:
             raise ValueError(f"wallet '{name}' already exists")
         wallet = QuantumWallet()

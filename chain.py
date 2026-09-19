@@ -1,7 +1,12 @@
+# chain.py
+#
+# Blockchain with UTXO set, block rewards, and fee collection.
+
 import json
 
 from block import Block
-from Transaction import Transaction
+from transaction import Transaction
+from utxo import UTXOSet, UTXO
 
 
 class ChainError(Exception):
@@ -9,53 +14,46 @@ class ChainError(Exception):
 
 
 class Blockchain:
-    """
-    An ordered, linked sequence of blocks.
 
-    The chain enforces three invariants at all times:
-
-        1. Linkage: every block's previous_hash equals the hash of
-           the block before it. A break in linkage means a block was
-           inserted, removed, or its predecessor was altered.
-
-        2. Integrity: every block's stored hash matches a fresh
-           recomputation of that block's contents. A mismatch means
-           a field inside the block was modified after it was added.
-
-        3. Transaction validity: every transaction in every block
-           carries a valid ML-DSA-65 signature from its sender.
-           A block containing an invalid transaction is rejected.
-
-    These three checks together mean that once a transaction is
-    confirmed in a block, it cannot be altered, removed, or forged
-    without detection.
-
-    Proof of Work:
-        To add a block, the miner must find a nonce such that the
-        block's hash starts with DIFFICULTY leading zeros. This makes
-        block production computationally expensive, which is what
-        prevents an attacker from cheaply rewriting the chain.
-
-        DIFFICULTY = 4 means the hash must start with "0000".
-        Each additional zero multiplies the expected work by 16.
-        At difficulty 4, a modern CPU finds a valid nonce in roughly
-        100-500ms, which is intentional for a prototype.
-    """
-
-    DIFFICULTY = 4
+    DIFFICULTY    = 4
+    BLOCK_REWARD  = 50.0     # coins awarded to the miner per block
+    HALVING       = 210000   # halve the reward every N blocks (like Bitcoin)
 
     def __init__(self):
-        self.chain : list[Block] = []
+        self.chain    : list[Block] = []
+        self.utxo_set : UTXOSet     = UTXOSet()
         self._create_genesis_block()
+
+    # ─────────────────────────────────────────────────────────
+    # Block reward
+    # ─────────────────────────────────────────────────────────
+
+    def block_reward(self, height: int) -> float:
+        """
+        Compute the block reward at a given height.
+
+        The reward halves every HALVING blocks, asymptotically
+        approaching zero. This is how total supply is capped.
+
+        At height 0: 50.0
+        At height 210000: 25.0
+        At height 420000: 12.5
+        ... and so on.
+        """
+        halvings = height // self.HALVING
+        if halvings >= 64:
+            return 0.0
+        return round(self.BLOCK_REWARD / (2 ** halvings), 8)
+
+    # ─────────────────────────────────────────────────────────
+    # Genesis
+    # ─────────────────────────────────────────────────────────
 
     def _create_genesis_block(self) -> None:
         """
-        Create and mine the first block.
-
-        The genesis block has no predecessor, so its previous_hash is
-        set to 64 zeros — a conventional placeholder that makes the
-        hash value explicit and unambiguous rather than an empty string
-        or None, which would be fragile to serialize consistently.
+        The genesis block carries no transactions and creates no UTXOs.
+        Coins enter the system only through coinbase transactions in
+        blocks 1 and beyond.
         """
         genesis = Block(
             index         = 0,
@@ -65,115 +63,141 @@ class Blockchain:
         self._mine(genesis)
         self.chain.append(genesis)
 
-    def _mine(self, block: Block) -> None:
-        """
-        Increment the nonce until the block hash satisfies the target.
+    # ─────────────────────────────────────────────────────────
+    # Mining
+    # ─────────────────────────────────────────────────────────
 
-        The target is a hash that starts with DIFFICULTY zero characters.
-        Because SHA3-256 output is uniformly distributed, the expected
-        number of iterations is 16^DIFFICULTY. There is no shortcut —
-        each candidate must be hashed independently.
-        """
+    def _mine(self, block: Block) -> None:
         target = "0" * self.DIFFICULTY
         while not block.hash.startswith(target):
             block.nonce += 1
             block.recompute_hash()
 
-    def _last_block(self) -> Block:
-        return self.chain[-1]
+    def mine_block(
+        self,
+        transactions   : list,
+        miner_address  : str
+    ) -> Block:
+        """
+        Build a coinbase transaction, prepend it to the transaction
+        list, validate all transactions against the UTXO set,
+        then mine the block.
 
-    def _validate_transactions(self, transactions: list) -> None:
+        The coinbase reward equals the protocol reward plus all fees
+        from the included transactions.
+
+        The coinbase is always the first transaction in the block.
+        This is a protocol convention that every node relies on when
+        parsing blocks — block.transactions[0] is always the coinbase.
+        """
+        # Validate all non-coinbase transactions
         for tx in transactions:
-            if not tx.is_valid():
+            if not tx.validate_against_utxo_set(self.utxo_set):
                 raise ChainError(
-                    f"Block rejected: invalid transaction.\n"
-                    f"  tx_id  : {tx.tx_id}\n"
-                    f"  sender : {tx.sender}"
+                    f"invalid transaction: {tx.tx_id[:16]}"
                 )
 
-    def mine_block(self, transactions: list) -> Block:
-        """
-        Validate transactions and mine a block without appending it.
+        # Compute total fees
+        total_fees = sum(tx.fee for tx in transactions)
 
-        This separation exists so the node can run mining in a thread
-        executor without blocking the async event loop, then append
-        the result in the main thread once mining completes.
+        # Compute miner reward
+        height = len(self.chain)
+        reward = round(self.block_reward(height) + total_fees, 8)
 
-        Reads the current chain tip at call time. If the tip changes
-        while mining (because a peer broadcast a block), the caller
-        is responsible for detecting the stale result and discarding it.
-        """
-        self._validate_transactions(transactions)
+        # Build coinbase
+        coinbase = Transaction.coinbase(miner_address, reward)
+
+        # Coinbase is always first
+        all_transactions = [coinbase] + transactions
 
         block = Block(
             index         = len(self.chain),
-            transactions  = transactions,
-            previous_hash = self._last_block().hash
+            transactions  = all_transactions,
+            previous_hash = self.chain[-1].hash
         )
+
         self._mine(block)
         return block
 
     def append_block(self, block: Block) -> None:
         """
-        Append a pre-validated block received from a peer.
-
-        The caller must perform all validation before calling this.
-        This method does not re-validate — it trusts the caller.
-        Used by the node when accepting a peer's mined block.
+        Append a pre-validated block and update the UTXO set.
+        Called both after local mining and when accepting a peer block.
         """
         self.chain.append(block)
+        self.utxo_set.apply_block(block)
 
-    def add_block(self, transactions: list) -> Block:
-        """
-        Mine and append a block in one call.
-        Convenience wrapper used in single-node contexts.
-        """
-        block = self.mine_block(transactions)
+    def add_block(self, transactions: list, miner_address: str) -> Block:
+        """Mine and append in one call. Used in single-node contexts."""
+        block = self.mine_block(transactions, miner_address)
         self.append_block(block)
         return block
 
+    # ─────────────────────────────────────────────────────────
+    # Validation
+    # ─────────────────────────────────────────────────────────
+
     def is_valid(self) -> bool:
         """
-        Walk the entire chain and verify all three invariants.
+        Rebuild the UTXO set from genesis and verify the full chain.
 
-        Starts at block index 1 because the genesis block has no
-        predecessor to link against. The genesis block's internal
-        integrity is still checked.
-
-        Returns True only if every check passes for every block.
+        This is a complete re-validation. It is expensive — O(n) in
+        the number of transactions in the chain. In production, this
+        is only called on startup and during chain reorganization.
+        Real-time validation uses the incremental UTXO updates in
+        append_block() instead.
         """
+        replay_utxo = UTXOSet()
+
         for i in range(1, len(self.chain)):
             current  = self.chain[i]
             previous = self.chain[i - 1]
 
             if not current.is_internally_valid():
-                print(
-                    f"Integrity failure at block {i}: "
-                    f"stored hash does not match block contents."
-                )
+                print(f"integrity failure at block {i}")
                 return False
 
             if current.previous_hash != previous.hash:
-                print(
-                    f"Linkage failure at block {i}: "
-                    f"previous_hash does not match block {i - 1} hash."
-                )
+                print(f"linkage failure at block {i}")
                 return False
 
-            for tx in current.transactions:
-                if not tx.is_valid():
-                    print(
-                        f"Signature failure at block {i}: "
-                        f"transaction {tx.tx_id[:16]} has invalid signature."
-                    )
+            if not current.hash.startswith("0" * self.DIFFICULTY):
+                print(f"proof-of-work failure at block {i}")
+                return False
+
+            # First transaction must be coinbase
+            if not current.transactions or not current.transactions[0].is_coinbase:
+                print(f"missing coinbase at block {i}")
+                return False
+
+            for j, tx in enumerate(current.transactions):
+                if j == 0:
+                    # Coinbase: apply outputs, skip input validation
+                    for k, out in enumerate(tx.outputs):
+                        replay_utxo.add(UTXO(tx.tx_id, k, out["address"], out["amount"]))
+                    continue
+
+                if not tx.validate_against_utxo_set(replay_utxo):
+                    print(f"transaction validation failure at block {i} tx {j}")
                     return False
+
+                # Apply transaction to replay set
+                for inp in tx.inputs:
+                    replay_utxo.spend(inp["tx_id"], inp["index"])
+                for k, out in enumerate(tx.outputs):
+                    replay_utxo.add(UTXO(tx.tx_id, k, out["address"], out["amount"]))
 
         return True
 
-    def tamper(self, block_index: int, field: str, value) -> None:
-        if block_index >= len(self.chain):
-            raise ChainError(f"No block at index {block_index}.")
-        setattr(self.chain[block_index], field, value)
+    # ─────────────────────────────────────────────────────────
+    # Helpers
+    # ─────────────────────────────────────────────────────────
+
+    def _last_block(self) -> Block:
+        return self.chain[-1]
+
+    def height(self) -> int:
+        return len(self.chain)
 
     def print_chain(self) -> None:
         for block in self.chain:
@@ -182,8 +206,14 @@ class Blockchain:
     def to_dict(self) -> list:
         return [block.to_dict() for block in self.chain]
 
-    def height(self) -> int:
-        return len(self.chain)
+    def tamper(self, block_index: int, field: str, value) -> None:
+        if block_index >= len(self.chain):
+            raise ChainError(f"no block at index {block_index}")
+        setattr(self.chain[block_index], field, value)
 
     def __repr__(self) -> str:
-        return f"Blockchain(height={self.height()}, valid={self.is_valid()})"
+        return (
+            f"Blockchain("
+            f"height={self.height()}, "
+            f"utxos={self.utxo_set.size()})"
+        )

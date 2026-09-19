@@ -1,7 +1,4 @@
 # main.py
-#
-# Starts the four-node network, the REST API, and the interactive CLI.
-# All three run concurrently in the same asyncio event loop.
 
 import asyncio
 import logging
@@ -34,7 +31,6 @@ API_PORT = 9000
 
 async def main():
 
-    # ── Nodes ─────────────────────────────────────────────────
     nodes = [Node(port, PEERS[port]) for port in PORTS]
 
     for node in nodes:
@@ -47,22 +43,32 @@ async def main():
 
     await asyncio.sleep(0.5)
 
-    # ── Wallet store ──────────────────────────────────────────
     wallet_store = WalletStore()
 
-    # ── REST API ──────────────────────────────────────────────
-    app     = build_app(nodes, wallet_store)
-    runner  = await start_api(app, API_HOST, API_PORT)
+    # Assign miner wallets.
+    # Each node mines rewards into its own wallet.
+    # Create these wallets on first run; reuse on subsequent runs.
+    for i, node in enumerate(nodes):
+        miner_name = f"miner_{node.port}"
+        wallet     = wallet_store.get(miner_name)
+        if wallet is None:
+            wallet = wallet_store.create(miner_name)
+            logging.info(
+                f"created miner wallet for node {node.port}: "
+                f"{wallet.address[:32]}..."
+            )
+        node.miner_address = wallet.address
+
+    app    = build_app(nodes, wallet_store)
+    runner = await start_api(app, API_HOST, API_PORT)
 
     print(f"\nREST API  : http://{API_HOST}:{API_PORT}")
     print(f"Nodes     : {PORTS}")
     print(f"Data dir  : data/\n")
 
-    # ── CLI ───────────────────────────────────────────────────
     cli = CLI(nodes, wallet_store)
     await cli.run()
 
-    # ── Shutdown ──────────────────────────────────────────────
     for node in nodes:
         node.close()
 

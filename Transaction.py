@@ -1,9 +1,38 @@
+# transaction.py
+#
+# A UTXO-based signed transaction.
+#
+# Structure change from the account model:
+#
+#   Before:
+#       sender, recipient, amount
+#       (implicit: sender's full balance is available to spend)
+#
+#   Now:
+#       inputs  : list of {tx_id, index} references to UTXOs being spent
+#       outputs : list of {address, amount} new UTXOs being created
+#       fee     : inputs_total - outputs_total, paid to the miner
+#
+# Validation rules:
+#   1. ML-DSA-65 signature is valid.
+#   2. At least one input and one output.
+#   3. No duplicate inputs (double-spend within the transaction).
+#   4. All inputs exist in the current UTXO set.
+#   5. All inputs are owned by the sender address.
+#   6. sum(inputs) >= sum(outputs)   (cannot create coins from nothing)
+#   7. fee >= 0
+#
+# Coinbase transactions (block rewards) are exempt from rules 2-6
+# because they have no inputs and create coins from nothing.
+# They are identified by the is_coinbase flag.
+
 import hashlib
 import json
 import time
 import base64
 
-from wallet import QuantumWallet
+from wallet import QuantumWallet, ALGORITHM
+import oqs
 
 
 class TransactionError(Exception):
@@ -12,98 +41,183 @@ class TransactionError(Exception):
 
 class Transaction:
     """
-    A signed transfer of value between two wallet addresses.
-
-    A transaction is considered valid if and only if:
-        1. It carries a non-empty ML-DSA-65 signature.
-        2. The attached public key re-derives to the sender address.
-        3. The signature verifies against the serialized core fields.
-
-    Condition 2 prevents an attacker from substituting a different
-    public key to pass signature verification while spoofing the
-    sender address field.
-
-    Condition 3 prevents tampering with any field after signing,
-    since altering any field changes the serialized bytes and
-    invalidates the signature.
+    A UTXO-based transaction with ML-DSA-65 signature.
     """
+
+    COINBASE_SENDER = "COINBASE"
 
     def __init__(
         self,
-        sender_address    : str,
-        recipient_address : str,
-        amount            : float
+        sender_address : str,
+        inputs         : list,
+        outputs        : list,
+        fee            : float = 0.0,
+        is_coinbase    : bool  = False
     ):
-        if amount <= 0:
-            raise TransactionError("Amount must be positive.")
+        """
+        inputs  : [{"tx_id": str, "index": int}, ...]
+        outputs : [{"address": str, "amount": float}, ...]
+        fee     : amount paid to the miner (inputs_total - outputs_total)
+        """
+        if not is_coinbase and fee < 0:
+            raise TransactionError("fee cannot be negative")
 
-        self.sender            = sender_address
-        self.recipient         = recipient_address
-        self.amount            = amount
-        self.timestamp         = time.time()
+        self.sender        = sender_address
+        self.inputs        = inputs
+        self.outputs       = outputs
+        self.fee           = fee
+        self.is_coinbase   = is_coinbase
+        self.timestamp     = time.time()
 
         self.tx_id             = ""
         self.signature         = b""
         self.sender_public_key = b""
 
+    # ─────────────────────────────────────────────────────────
+    # Convenience constructors
+    # ─────────────────────────────────────────────────────────
+
+    @classmethod
+    def coinbase(cls, miner_address: str, reward: float) -> "Transaction":
+        """
+        Create a coinbase transaction that mints the block reward.
+
+        Coinbase transactions have no inputs. They create coins
+        from nothing, authorized by the protocol rules rather than
+        by a private key signature.
+
+        The miner's address receives the full reward as a single output.
+        In practice the reward also includes all fees from the block's
+        transactions, but that aggregation is done in chain.py.
+        """
+        tx = cls(
+            sender_address = cls.COINBASE_SENDER,
+            inputs         = [],
+            outputs        = [{"address": miner_address, "amount": reward}],
+            fee            = 0.0,
+            is_coinbase    = True
+        )
+        tx.tx_id = tx._compute_tx_id()
+        return tx
+
+    @classmethod
+    def transfer(
+        cls,
+        sender_wallet  : QuantumWallet,
+        utxo_set,
+        recipient_address : str,
+        amount            : float,
+        fee               : float = 0.0
+    ) -> "Transaction":
+        """
+        Build and sign a transfer transaction automatically.
+
+        Selects UTXOs from the sender's unspent outputs (largest first)
+        until the required amount + fee is covered. Creates a change
+        output back to the sender if the selected inputs exceed the
+        required total.
+
+        This is the standard "coin selection" algorithm. Largest-first
+        minimizes the number of inputs, keeping transaction size down.
+
+        Raises TransactionError if the sender has insufficient funds.
+        """
+        required = amount + fee
+        available = utxo_set.utxos_for(sender_wallet.address)
+
+        if not available:
+            raise TransactionError(
+                f"no UTXOs found for {sender_wallet.address[:24]}..."
+            )
+
+        # Sort largest first to minimize input count
+        available.sort(key=lambda u: u.amount, reverse=True)
+
+        selected  = []
+        total_in  = 0.0
+
+        for utxo in available:
+            selected.append(utxo)
+            total_in += utxo.amount
+            if total_in >= required:
+                break
+
+        if total_in < required:
+            raise TransactionError(
+                f"insufficient funds: "
+                f"have {round(total_in, 8)}, need {required}"
+            )
+
+        inputs = [{"tx_id": u.tx_id, "index": u.index} for u in selected]
+
+        outputs = [{"address": recipient_address, "amount": amount}]
+
+        change = round(total_in - amount - fee, 8)
+        if change > 0:
+            outputs.append({"address": sender_wallet.address, "amount": change})
+
+        tx = cls(
+            sender_address = sender_wallet.address,
+            inputs         = inputs,
+            outputs        = outputs,
+            fee            = fee
+        )
+        tx.sign(sender_wallet)
+        return tx
+
+    # ─────────────────────────────────────────────────────────
+    # Serialization
+    # ─────────────────────────────────────────────────────────
+
     def _core(self) -> dict:
         """
-        The canonical set of fields that are hashed and signed.
-
-        sort_keys=True is critical — without it, dict serialization
-        order is non-deterministic across Python versions and
-        platforms, which would produce different byte strings for
-        the same logical transaction.
+        The canonical fields that are hashed and signed.
+        Inputs and outputs are included so neither can be altered
+        after signing without invalidating the signature.
         """
         return {
-            "sender"    : self.sender,
-            "recipient" : self.recipient,
-            "amount"    : self.amount,
-            "timestamp" : self.timestamp
+            "sender"     : self.sender,
+            "inputs"     : self.inputs,
+            "outputs"    : self.outputs,
+            "fee"        : self.fee,
+            "is_coinbase": self.is_coinbase,
+            "timestamp"  : self.timestamp
         }
 
     def to_bytes(self) -> bytes:
         return json.dumps(self._core(), sort_keys=True).encode("utf-8")
 
     def _compute_tx_id(self) -> str:
-        """
-        SHA3-256 hash of the serialized core fields.
-        Serves as the unique identifier for this transaction.
-        """
         return hashlib.sha3_256(self.to_bytes()).hexdigest()
 
-    def sign(self, wallet: QuantumWallet) -> None:
-        """
-        Attach a ML-DSA-65 signature to this transaction.
+    # ─────────────────────────────────────────────────────────
+    # Signing
+    # ─────────────────────────────────────────────────────────
 
-        Enforces that the signing wallet owns the sender address.
-        This check is local only — it does not replace network-level
-        address validation, which nodes perform independently during
-        block verification.
-        """
+    def sign(self, wallet: QuantumWallet) -> None:
         if wallet.address != self.sender:
             raise TransactionError(
-                f"Signing wallet address does not match sender.\n"
-                f"  wallet  : {wallet.address}\n"
-                f"  sender  : {self.sender}"
+                f"signing wallet does not match sender\n"
+                f"  wallet : {wallet.address}\n"
+                f"  sender : {self.sender}"
             )
 
         self.tx_id             = self._compute_tx_id()
         self.signature         = wallet.sign(self.to_bytes())
         self.sender_public_key = wallet.public_key
 
+    # ─────────────────────────────────────────────────────────
+    # Validation
+    # ─────────────────────────────────────────────────────────
+
     def is_valid(self) -> bool:
         """
-        Verify the transaction against its attached public key.
-
-        Validation steps:
-            1. Reject if signature or public key is missing.
-            2. Re-derive the address from the public key.
-               Reject if it does not match the sender field.
-            3. Run ML-DSA-65 signature verification.
-
-        Returns True only if all three steps pass.
+        Validate signature only.
+        UTXO existence and balance checks are done by the chain.
         """
+        if self.is_coinbase:
+            return True
+
         if not self.signature or not self.sender_public_key:
             return False
 
@@ -117,22 +231,70 @@ class Transaction:
             self.sender_public_key
         )
 
+    def validate_against_utxo_set(self, utxo_set) -> bool:
+        """
+        Full UTXO validation.
+
+        Checks:
+            1. At least one input and one output.
+            2. No duplicate inputs.
+            3. All inputs exist in the UTXO set.
+            4. All inputs owned by sender.
+            5. Input total >= output total.
+            6. Signature valid.
+        """
+        if self.is_coinbase:
+            return True
+
+        if not self.inputs or not self.outputs:
+            return False
+
+        # No duplicate inputs
+        input_keys = [(i["tx_id"], i["index"]) for i in self.inputs]
+        if len(input_keys) != len(set(input_keys)):
+            return False
+
+        input_total = 0.0
+        for inp in self.inputs:
+            utxo = utxo_set.get(inp["tx_id"], inp["index"])
+            if utxo is None:
+                return False
+            if utxo.address != self.sender:
+                return False
+            input_total += utxo.amount
+
+        output_total = sum(o["amount"] for o in self.outputs)
+
+        if input_total < output_total:
+            return False
+
+        return self.is_valid()
+
+    # ─────────────────────────────────────────────────────────
+    # Helpers
+    # ─────────────────────────────────────────────────────────
+
+    def total_output(self) -> float:
+        return sum(o["amount"] for o in self.outputs)
+
     def to_dict(self) -> dict:
         return {
-            "tx_id"            : self.tx_id,
-            "sender"           : self.sender,
-            "recipient"        : self.recipient,
-            "amount"           : self.amount,
-            "timestamp"        : self.timestamp,
-            "signature_bytes"  : len(self.signature),
-            "valid"            : self.is_valid()
+            "tx_id"      : self.tx_id,
+            "sender"     : self.sender,
+            "inputs"     : self.inputs,
+            "outputs"    : self.outputs,
+            "fee"        : self.fee,
+            "is_coinbase": self.is_coinbase,
+            "timestamp"  : self.timestamp,
+            "sig_bytes"  : len(self.signature),
+            "valid"      : self.is_valid()
         }
 
     def __repr__(self) -> str:
         return (
             f"Transaction("
             f"tx_id={self.tx_id[:16]}..., "
-            f"sender={self.sender[:16]}..., "
-            f"amount={self.amount}, "
-            f"valid={self.is_valid()})"
+            f"coinbase={self.is_coinbase}, "
+            f"fee={self.fee}, "
+            f"outputs={len(self.outputs)})"
         )
