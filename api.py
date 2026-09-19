@@ -279,6 +279,13 @@ async def handle_merkle_proof(request: web.Request) -> web.Response:
         return err(f"block {block_index} does not exist", 404)
 
     block = node.chain.chain[block_index]
+    if tx_index < 0 or tx_index >= block.transaction_count():
+        return err(
+            f"tx index {tx_index} out of range. "
+            f"block has {block.transaction_count()} transactions",
+            404,
+        )
+
     proof_data = block.merkle_proof(tx_index)
     if proof_data is None:
         return err(
