@@ -3,7 +3,7 @@
 # Block structure updated to include the Merkle root in the header.
 #
 # The block hash now covers:
-#     index, timestamp, merkle_root, previous_hash, nonce
+#     index, timestamp, merkle_root, previous_hash, difficulty, nonce
 #
 # The transactions themselves are NOT directly included in the hash.
 # Instead, they are committed to via the Merkle root.
@@ -38,6 +38,9 @@ class Block:
         timestamp       -- unix time at creation
         merkle_root     -- root of the Merkle tree over transactions
         previous_hash   -- hash of the preceding block
+        difficulty      -- required leading-zero hex digits for this
+                            block's hash, set by the chain's retarget
+                            logic (see Blockchain.expected_difficulty)
         nonce           -- incremented during proof of work
 
     Body (not directly hashed, committed via merkle_root):
@@ -53,12 +56,14 @@ class Block:
         index         : int,
         transactions  : list,
         previous_hash : str,
+        difficulty    : int,
         nonce         : int = 0
     ):
         self.index         = index
         self.timestamp     = time.time()
         self.transactions  = transactions
         self.previous_hash = previous_hash
+        self.difficulty    = difficulty
         self.nonce         = nonce
 
         # Build the Merkle tree and store the root in the header
@@ -86,6 +91,7 @@ class Block:
             "timestamp"     : self.timestamp,
             "merkle_root"   : self.merkle_root,
             "previous_hash" : self.previous_hash,
+            "difficulty"    : self.difficulty,
             "nonce"         : self.nonce
         }
         raw = json.dumps(header, sort_keys=True).encode("utf-8")
@@ -200,6 +206,7 @@ class Block:
             "merkle_root"   : self.merkle_root,
             "previous_hash" : self.previous_hash,
             "hash"          : self.hash,
+            "difficulty"    : self.difficulty,
             "nonce"         : self.nonce,
             "transactions"  : self._serialize_transactions()
         }
@@ -215,6 +222,7 @@ class Block:
             "merkle_root"   : self.merkle_root,
             "previous_hash" : self.previous_hash,
             "hash"          : self.hash,
+            "difficulty"    : self.difficulty,
             "nonce"         : self.nonce,
             "tx_count"      : self.transaction_count()
         }
