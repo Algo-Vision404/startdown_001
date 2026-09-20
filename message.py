@@ -5,6 +5,7 @@ import base64
 
 from Transaction import Transaction
 from block import Block
+from merkle import MerkleTree
 
 
 class MessageType:
@@ -66,6 +67,8 @@ def deserialize_block(data: dict) -> Block:
     block.hash          = data["hash"]
     block.nonce         = data["nonce"]
     block.transactions  = [deserialize_transaction(tx) for tx in data["transactions"]]
+    block._merkle_tree  = MerkleTree(block.transactions)
+    block.merkle_root   = block._merkle_tree.root
     return block
 
 
