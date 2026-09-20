@@ -508,6 +508,13 @@ class Node:
                 )
                 return
 
+            if not self.chain.coinbase_reward_is_valid(block):
+                logging.warning(
+                    f"[{self.port}] block {block.index} has an invalid "
+                    f"coinbase reward"
+                )
+                return
+
             for tx in block.transactions:
                 if not tx.is_valid():
                     logging.warning(

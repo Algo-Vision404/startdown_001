@@ -95,8 +95,10 @@ class Blockchain:
         locally_spent = set()   # (tx_id, index) consumed earlier in this sequence
         locally_added = {}      # (tx_id, index) -> UTXO created earlier in this sequence
 
-        for tx in transactions:
+        for position, tx in enumerate(transactions):
             if tx.is_coinbase:
+                if position != 0:
+                    return False
                 for i, out in enumerate(tx.outputs):
                     locally_added[(tx.tx_id, i)] = UTXO(
                         tx.tx_id, i, out["address"], out["amount"]
@@ -173,6 +175,9 @@ class Blockchain:
         This is a protocol convention that every node relies on when
         parsing blocks — block.transactions[0] is always the coinbase.
         """
+        if any(tx.is_coinbase for tx in transactions):
+            raise ChainError("coinbase transactions cannot be submitted")
+
         # Validate the whole batch together (catches double-spends across
         # transactions in this same block, not just against confirmed UTXOs)
         if not self.validate_transaction_sequence(transactions, self.utxo_set):
@@ -217,6 +222,15 @@ class Blockchain:
         self.append_block(block)
         return block
 
+    def coinbase_reward_is_valid(self, block: Block) -> bool:
+        if not block.transactions or not block.transactions[0].is_coinbase:
+            return False
+
+        fees = sum(tx.fee for tx in block.transactions[1:])
+        expected = round(self.block_reward(block.index) + fees, 8)
+        actual = round(block.transactions[0].total_output(), 8)
+        return actual == expected
+
     # ─────────────────────────────────────────────────────────
     # Validation
     # ─────────────────────────────────────────────────────────
@@ -252,6 +266,10 @@ class Blockchain:
             # First transaction must be coinbase
             if not current.transactions or not current.transactions[0].is_coinbase:
                 print(f"missing coinbase at block {i}")
+                return False
+
+            if not self.coinbase_reward_is_valid(current):
+                print(f"invalid coinbase reward at block {i}")
                 return False
 
             for j, tx in enumerate(current.transactions):
