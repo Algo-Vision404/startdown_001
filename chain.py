@@ -312,6 +312,10 @@ class Blockchain:
                         replay_utxo.add(UTXO(tx.tx_id, k, out["address"], out["amount"]))
                     continue
 
+                if tx.is_coinbase:
+                    print(f"extra coinbase at block {i} tx {j}")
+                    return False
+
                 if not tx.validate_against_utxo_set(replay_utxo):
                     print(f"transaction validation failure at block {i} tx {j}")
                     return False

@@ -2,6 +2,7 @@ import unittest
 
 from Transaction import Transaction
 from chain import Blockchain
+from merkle import MerkleTree
 from utxo import UTXOSet
 
 
@@ -54,6 +55,19 @@ class TestCoinbaseRules(unittest.TestCase):
         })
 
         self.assertFalse(chain.coinbase_reward_is_valid(block))
+
+    def test_full_chain_validation_rejects_extra_coinbase(self):
+        chain = Blockchain()
+        block = chain.mine_block([], "miner")
+        block.transactions.append(Transaction.coinbase("attacker", 1.0))
+        block._merkle_tree = MerkleTree(block.transactions)
+        block.merkle_root = block._merkle_tree.root
+        block.nonce = 0
+        block.recompute_hash()
+        chain._mine(block)
+        chain.append_block(block)
+
+        self.assertFalse(chain.is_valid())
 
 
 if __name__ == "__main__":
