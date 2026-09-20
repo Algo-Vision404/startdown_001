@@ -61,6 +61,8 @@ class Blockchain:
             transactions  = [],
             previous_hash = "0" * 64
         )
+        genesis.timestamp = 0.0
+        genesis.recompute_hash()
         self._mine(genesis)
         self.chain.append(genesis)
 

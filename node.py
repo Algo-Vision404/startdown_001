@@ -578,6 +578,12 @@ class Node:
         candidate.chain    = [deserialize_block(b) for b in chain_data]
         candidate.utxo_set = UTXOSet()
 
+        if not candidate.chain or candidate.chain[0].hash != self.chain.chain[0].hash:
+            logging.warning(
+                f"[{self.port}] rejected chain with an unknown genesis block"
+            )
+            return
+
         for block in candidate.chain:
             candidate.utxo_set.apply_block(block)
 

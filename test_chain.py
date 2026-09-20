@@ -6,6 +6,13 @@ from utxo import UTXOSet
 
 
 class TestCoinbaseRules(unittest.TestCase):
+    def test_genesis_block_is_deterministic(self):
+        first = Blockchain()
+        second = Blockchain()
+
+        self.assertEqual(first.chain[0].hash, second.chain[0].hash)
+        self.assertEqual(first.chain[0].timestamp, 0.0)
+
     def test_only_first_transaction_in_sequence_may_be_coinbase(self):
         first = Transaction.coinbase("miner-a", 50.0)
         second = Transaction.coinbase("miner-b", 50.0)
