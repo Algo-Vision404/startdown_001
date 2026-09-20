@@ -19,6 +19,8 @@ class Blockchain:
     DIFFICULTY    = 4
     BLOCK_REWARD  = 50.0     # coins awarded to the miner per block
     HALVING       = 210000   # halve the reward every N blocks (like Bitcoin)
+    GENESIS_NONCE = 120923
+    GENESIS_HASH  = "000013b1c38339e8c928955abcb61e3178fe2811e4b82e055c0b1e25da813478"
 
     def __init__(self):
         self.chain    : list[Block] = []
@@ -59,11 +61,11 @@ class Blockchain:
         genesis = Block(
             index         = 0,
             transactions  = [],
-            previous_hash = "0" * 64
+            previous_hash = "0" * 64,
+            nonce         = self.GENESIS_NONCE
         )
         genesis.timestamp = 0.0
         genesis.recompute_hash()
-        self._mine(genesis)
         self.chain.append(genesis)
 
     # ─────────────────────────────────────────────────────────
@@ -260,6 +262,22 @@ class Blockchain:
         Real-time validation uses the incremental UTXO updates in
         append_block() instead.
         """
+        if not self.chain:
+            return False
+
+        genesis = self.chain[0]
+        if (
+            genesis.index != 0
+            or genesis.timestamp != 0.0
+            or genesis.previous_hash != "0" * 64
+            or genesis.transactions
+            or genesis.nonce != self.GENESIS_NONCE
+            or genesis.hash != self.GENESIS_HASH
+            or not genesis.is_internally_valid()
+        ):
+            print("invalid genesis block")
+            return False
+
         replay_utxo = UTXOSet()
 
         for i in range(1, len(self.chain)):

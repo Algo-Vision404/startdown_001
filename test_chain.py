@@ -13,6 +13,13 @@ class TestCoinbaseRules(unittest.TestCase):
         self.assertEqual(first.chain[0].hash, second.chain[0].hash)
         self.assertEqual(first.chain[0].timestamp, 0.0)
 
+    def test_chain_rejects_replaced_genesis(self):
+        chain = Blockchain()
+        chain.chain[0].nonce += 1
+        chain.chain[0].recompute_hash()
+
+        self.assertFalse(chain.is_valid())
+
     def test_only_first_transaction_in_sequence_may_be_coinbase(self):
         first = Transaction.coinbase("miner-a", 50.0)
         second = Transaction.coinbase("miner-b", 50.0)
