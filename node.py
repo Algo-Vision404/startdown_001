@@ -325,13 +325,23 @@ class Node:
 
         elif msg_type == MessageType.TRANSACTION:
             if data:
-                tx = deserialize_transaction(data)
-                await self._on_transaction(tx)
+                try:
+                    tx = deserialize_transaction(data)
+                    await self._on_transaction(tx)
+                except Exception as e:
+                    logging.warning(
+                        f"[{self.port}] rejected malformed transaction: {e}"
+                    )
 
         elif msg_type == MessageType.BLOCK:
             if data:
-                block = deserialize_block(data)
-                await self._on_block(block)
+                try:
+                    block = deserialize_block(data)
+                    await self._on_block(block)
+                except Exception as e:
+                    logging.warning(
+                        f"[{self.port}] rejected malformed block: {e}"
+                    )
 
         elif msg_type == MessageType.REQUEST_CHAIN:
             chain_data = [serialize_block(b) for b in self.chain.chain]
@@ -574,8 +584,16 @@ class Node:
         if len(chain_data) <= len(self.chain.chain):
             return
 
+        try:
+            candidate_blocks = [deserialize_block(b) for b in chain_data]
+        except Exception as e:
+            logging.warning(
+                f"[{self.port}] rejected malformed chain: {e}"
+            )
+            return
+
         candidate          = Blockchain.__new__(Blockchain)
-        candidate.chain    = [deserialize_block(b) for b in chain_data]
+        candidate.chain    = candidate_blocks
         candidate.utxo_set = UTXOSet()
 
         if not candidate.chain or candidate.chain[0].hash != self.chain.chain[0].hash:
