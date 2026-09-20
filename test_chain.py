@@ -1,11 +1,24 @@
 import unittest
 import math
+from types import SimpleNamespace
 
 from Transaction import Transaction
 from chain import Blockchain
 from merkle import MerkleTree
 from utxo import UTXO, UTXOSet
 from wallet import QuantumWallet
+
+
+def _fake_chain(difficulties_and_timestamps):
+    """
+    Build a lightweight stand-in for a list of Blocks, carrying only the
+    two attributes expected_difficulty() touches: difficulty and
+    timestamp. Index 0 plays the role of genesis.
+    """
+    return [
+        SimpleNamespace(difficulty=d, timestamp=t)
+        for d, t in difficulties_and_timestamps
+    ]
 
 
 class TestCoinbaseRules(unittest.TestCase):
@@ -127,6 +140,81 @@ class TestCoinbaseRules(unittest.TestCase):
         block.transactions[0].tx_id = "f" * 64
         block._merkle_tree = MerkleTree(block.transactions)
         block.merkle_root = block._merkle_tree.root
+        block.nonce = 0
+        block.recompute_hash()
+        chain._mine(block)
+        chain.append_block(block)
+
+        self.assertFalse(chain.is_valid())
+
+
+class TestDifficultyRetargeting(unittest.TestCase):
+    def test_difficulty_holds_steady_below_first_retarget_window(self):
+        chain = Blockchain()
+        history = [(4, 0.0)] + [(4, float(i)) for i in range(1, 6)]
+        self.assertEqual(chain.expected_difficulty(_fake_chain(history)), 4)
+
+    def test_difficulty_increases_when_blocks_mined_too_fast(self):
+        chain = Blockchain()
+        # genesis + blocks 1..9 -> height 10 triggers the first retarget.
+        # Window is blocks[1..9]: 8 intervals * 30s target = 240s expected.
+        # Mined within ~1 second total, well under half the expected time.
+        history = [(4, 0.0)] + [(4, i * 0.1) for i in range(1, 10)]
+        self.assertEqual(chain.expected_difficulty(_fake_chain(history)), 5)
+
+    def test_difficulty_decreases_when_blocks_mined_too_slow(self):
+        chain = Blockchain()
+        # Same shape, spread far past 2x the 240s expected window.
+        history = [(4, 0.0)] + [(4, i * 100.0) for i in range(1, 10)]
+        self.assertEqual(chain.expected_difficulty(_fake_chain(history)), 3)
+
+    def test_difficulty_unchanged_within_tolerance(self):
+        chain = Blockchain()
+        # 8 intervals at exactly the 30s target -> right at the expected
+        # time, comfortably inside the [0.5x, 2x] tolerance band.
+        history = [(4, 0.0)] + [(4, 1.0 + i * 30.0) for i in range(0, 9)]
+        self.assertEqual(chain.expected_difficulty(_fake_chain(history)), 4)
+
+    def test_difficulty_does_not_drop_below_minimum(self):
+        chain = Blockchain()
+        history = [(chain.MIN_DIFFICULTY, 0.0)] + [
+            (chain.MIN_DIFFICULTY, i * 1000.0) for i in range(1, 10)
+        ]
+        self.assertEqual(
+            chain.expected_difficulty(_fake_chain(history)),
+            chain.MIN_DIFFICULTY
+        )
+
+    def test_difficulty_does_not_rise_above_maximum(self):
+        chain = Blockchain()
+        history = [(chain.MAX_DIFFICULTY, 0.0)] + [
+            (chain.MAX_DIFFICULTY, i * 0.001) for i in range(1, 10)
+        ]
+        self.assertEqual(
+            chain.expected_difficulty(_fake_chain(history)),
+            chain.MAX_DIFFICULTY
+        )
+
+    def test_genesis_timestamp_is_never_used_as_timing_reference(self):
+        # Genesis is pinned at timestamp 0.0 for deterministic chain
+        # identity. If a retarget window used it as a reference point,
+        # "actual_time" would be a real Unix epoch value (~1.7 billion
+        # seconds) against a 240s expectation, and difficulty would
+        # collapse to the floor on every real deployment. It should not.
+        chain = Blockchain()
+        history = [(4, 0.0)] + [
+            (4, 1_700_000_000.0 + i * 30.0) for i in range(1, 10)
+        ]
+        self.assertEqual(chain.expected_difficulty(_fake_chain(history)), 4)
+
+    def test_full_chain_validation_rejects_mismatched_difficulty(self):
+        chain = Blockchain()
+        block = chain.mine_block([], "miner")
+
+        # Force a difficulty inconsistent with what expected_difficulty()
+        # requires for this position, keeping the header hash internally
+        # consistent by re-mining under the (wrong, easier) target.
+        block.difficulty = chain.MIN_DIFFICULTY
         block.nonce = 0
         block.recompute_hash()
         chain._mine(block)
