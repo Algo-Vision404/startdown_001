@@ -27,6 +27,7 @@ from utxo import UTXOSet
 class Node:
 
     BLOCK_SIZE         = 2
+    MEMPOOL_MAX_SIZE   = 500    # maximum pending transactions kept in the mempool
     PEER_REFRESH_SEC   = 60     # how often to run peer discovery
     PEER_SAVE_SEC      = 120    # how often to save peer list to disk
     PING_INTERVAL_SEC  = 30     # how often to ping connected peers
@@ -437,6 +438,36 @@ class Node:
             pending |= self._input_keys(tx)
         self.pending_inputs = pending
 
+    def _evict_excess_mempool(self) -> None:
+        """
+        Enforce MEMPOOL_MAX_SIZE by dropping the lowest-fee transactions.
+
+        The mempool is kept sorted by fee (descending) by the caller, so
+        the transactions to evict are always the tail of the list. This
+        bounds memory use under a flood of low-fee or spam transactions:
+        once the mempool is full, only a transaction paying a higher fee
+        than the current lowest-fee entry can displace it.
+
+        Evicted transactions are removed from seen_tx_ids as well as the
+        mempool, so they are not permanently blacklisted — a later
+        resubmission (e.g. with a bumped fee) is treated as new.
+        """
+        if len(self.mempool) <= self.MEMPOOL_MAX_SIZE:
+            return
+
+        evicted      = self.mempool[self.MEMPOOL_MAX_SIZE:]
+        self.mempool = self.mempool[:self.MEMPOOL_MAX_SIZE]
+
+        for tx in evicted:
+            self.seen_tx_ids.discard(tx.tx_id)
+
+        self._recompute_pending_inputs()
+
+        logging.info(
+            f"[{self.port}] evicted {len(evicted)} low-fee mempool "
+            f"transactions (cap={self.MEMPOOL_MAX_SIZE})"
+        )
+
     # ─────────────────────────────────────────────────────────
     # Transaction handling
     # ─────────────────────────────────────────────────────────
@@ -475,6 +506,7 @@ class Node:
         self.seen_tx_ids.add(tx.tx_id)
         self.mempool.append(tx)
         self.mempool.sort(key=lambda t: t.fee, reverse=True)
+        self._evict_excess_mempool()
 
         logging.info(
             f"[{self.port}] accepted tx {tx.tx_id[:16]}... "
