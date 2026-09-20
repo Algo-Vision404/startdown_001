@@ -306,6 +306,10 @@ class Blockchain:
             current  = self.chain[i]
             previous = self.chain[i - 1]
 
+            if current.index != i or previous.index != i - 1:
+                print(f"index failure at block {i}")
+                return False
+
             if not current.is_internally_valid():
                 print(f"integrity failure at block {i}")
                 return False
