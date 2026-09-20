@@ -16,11 +16,28 @@ class ChainError(Exception):
 
 class Blockchain:
 
-    DIFFICULTY    = 4
     BLOCK_REWARD  = 50.0     # coins awarded to the miner per block
     HALVING       = 210000   # halve the reward every N blocks (like Bitcoin)
-    GENESIS_NONCE = 120923
-    GENESIS_HASH  = "000013b1c38339e8c928955abcb61e3178fe2811e4b82e055c0b1e25da813478"
+    GENESIS_NONCE = 14002
+    GENESIS_HASH  = "00009598a2a165ff16037a517046057030575475c7a64dc380a0bb3577d8617a"
+
+    # ─────────────────────────────────────────────────────────
+    # Difficulty retargeting
+    # ─────────────────────────────────────────────────────────
+    #
+    # Difficulty is the number of required leading hex-zero digits in a
+    # block's hash. Every RETARGET_INTERVAL blocks, the chain compares
+    # the actual time taken to mine the last window of blocks against
+    # the target, and nudges difficulty by one level (each level is a
+    # 16x change in expected mining work, since it's a hex digit) if
+    # blocks were mined more than 2x too fast or too slow. This mirrors
+    # Bitcoin's retargeting in spirit, simplified to single-step moves
+    # so difficulty can't swing wildly from one retarget to the next.
+    INITIAL_DIFFICULTY = 4
+    MIN_DIFFICULTY      = 1
+    MAX_DIFFICULTY      = 8
+    TARGET_BLOCK_TIME   = 30     # seconds, desired average time per block
+    RETARGET_INTERVAL   = 10     # blocks between difficulty adjustments
 
     def __init__(self):
         self.chain    : list[Block] = []
@@ -62,6 +79,7 @@ class Blockchain:
             index         = 0,
             transactions  = [],
             previous_hash = "0" * 64,
+            difficulty    = self.INITIAL_DIFFICULTY,
             nonce         = self.GENESIS_NONCE
         )
         genesis.timestamp = 0.0
@@ -176,11 +194,83 @@ class Blockchain:
         return True
 
     # ─────────────────────────────────────────────────────────
+    # Difficulty
+    # ─────────────────────────────────────────────────────────
+
+    def expected_difficulty(self, chain: list = None) -> int:
+        """
+        Compute the difficulty required for the next block appended
+        after `chain` (defaults to this instance's current chain).
+
+        Accepting an explicit chain (rather than always reading
+        self.chain) lets both mine_block() and is_valid() share this
+        logic: mine_block() calls it with the live chain, is_valid()
+        calls it with self.chain[:i] while replaying block i so it is
+        re-deriving what the difficulty *should* have been at that
+        point, not trusting the stored value.
+
+        Between retargets, difficulty holds steady at the last block's
+        value. At a retarget boundary, it looks at the time actually
+        taken to mine the last RETARGET_INTERVAL blocks and moves by
+        at most one level: up if that window ran more than 2x faster
+        than target (chain is under-secured relative to its miners),
+        down if it ran more than 2x slower (blocks are taking too
+        long), clamped to [MIN_DIFFICULTY, MAX_DIFFICULTY].
+
+        The genesis block is never used as a timing reference (see the
+        comment above where the window is computed) — its timestamp is
+        a fixed constant, not real wall-clock time.
+        """
+        chain = self.chain if chain is None else chain
+        height = len(chain)
+
+        if height == 0:
+            return self.INITIAL_DIFFICULTY
+
+        if height < self.RETARGET_INTERVAL or height % self.RETARGET_INTERVAL != 0:
+            return chain[-1].difficulty
+
+        # Never use the genesis block as a timing reference: its timestamp
+        # is a fixed constant (0.0), required for deterministic chain
+        # identity, not a real wall-clock time. A window that included it
+        # would see an enormous synthetic time delta on the very first
+        # retarget (real epoch time minus 0) and crash difficulty to the
+        # floor on every real deployment. So the window always starts at
+        # block index >= 1.
+        window_start_index = max(1, height - self.RETARGET_INTERVAL)
+        window_end_index   = height - 1
+        num_intervals       = window_end_index - window_start_index
+
+        if num_intervals <= 0:
+            # Not enough real-block history yet to measure a window.
+            return chain[-1].difficulty
+
+        window_start  = chain[window_start_index]
+        window_end    = chain[window_end_index]
+        actual_time   = window_end.timestamp - window_start.timestamp
+        expected_time = num_intervals * self.TARGET_BLOCK_TIME
+        current       = window_end.difficulty
+
+        # Guard against a non-positive window (clock skew, or a test
+        # chain mined faster than timestamp resolution allows).
+        if actual_time <= 0:
+            actual_time = 1e-9
+
+        if actual_time < expected_time / 2:
+            new_difficulty = current + 1
+        elif actual_time > expected_time * 2:
+            new_difficulty = current - 1
+        else:
+            new_difficulty = current
+
+        return max(self.MIN_DIFFICULTY, min(self.MAX_DIFFICULTY, new_difficulty))
+
+    # ─────────────────────────────────────────────────────────
     # Mining
     # ─────────────────────────────────────────────────────────
 
     def _mine(self, block: Block) -> None:
-        target = "0" * self.DIFFICULTY
+        target = "0" * block.difficulty
         while not block.hash.startswith(target):
             block.nonce += 1
             block.recompute_hash()
@@ -229,7 +319,8 @@ class Blockchain:
         block = Block(
             index         = len(self.chain),
             transactions  = all_transactions,
-            previous_hash = self.chain[-1].hash
+            previous_hash = self.chain[-1].hash,
+            difficulty    = self.expected_difficulty()
         )
 
         self._mine(block)
@@ -294,6 +385,7 @@ class Blockchain:
             or genesis.previous_hash != "0" * 64
             or genesis.transactions
             or genesis.nonce != self.GENESIS_NONCE
+            or genesis.difficulty != self.INITIAL_DIFFICULTY
             or genesis.hash != self.GENESIS_HASH
             or not genesis.is_internally_valid()
         ):
@@ -318,7 +410,15 @@ class Blockchain:
                 print(f"linkage failure at block {i}")
                 return False
 
-            if not current.hash.startswith("0" * self.DIFFICULTY):
+            expected_diff = self.expected_difficulty(self.chain[:i])
+            if current.difficulty != expected_diff:
+                print(
+                    f"difficulty failure at block {i}: "
+                    f"expected {expected_diff}, got {current.difficulty}"
+                )
+                return False
+
+            if not current.hash.startswith("0" * current.difficulty):
                 print(f"proof-of-work failure at block {i}")
                 return False
 
