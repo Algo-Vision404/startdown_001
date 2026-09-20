@@ -538,7 +538,16 @@ class Node:
         if (block.previous_hash == last.hash
                 and block.index == last.index + 1):
 
-            if not block.hash.startswith("0" * Blockchain.DIFFICULTY):
+            expected_diff = self.chain.expected_difficulty(self.chain.chain)
+            if block.difficulty != expected_diff:
+                logging.warning(
+                    f"[{self.port}] block {block.index} has wrong "
+                    f"difficulty: expected {expected_diff}, "
+                    f"got {block.difficulty}"
+                )
+                return
+
+            if not block.hash.startswith("0" * block.difficulty):
                 logging.warning(
                     f"[{self.port}] block {block.index} fails PoW"
                 )
@@ -755,6 +764,7 @@ class Node:
             "host"           : self.host,
             "height"         : self.chain.height(),
             "tip_hash"       : self.chain.chain[-1].hash[:32],
+            "difficulty"     : self.chain.chain[-1].difficulty,
             "chain_valid"    : self.chain.is_valid(),
             "mempool"        : len(self.mempool),
             "peers"          : list(self.peers.keys()),
