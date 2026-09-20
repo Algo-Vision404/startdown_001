@@ -69,6 +69,19 @@ class TestCoinbaseRules(unittest.TestCase):
 
         self.assertFalse(chain.is_valid())
 
+    def test_full_chain_validation_rejects_tampered_coinbase_id(self):
+        chain = Blockchain()
+        block = chain.mine_block([], "miner")
+        block.transactions[0].tx_id = "f" * 64
+        block._merkle_tree = MerkleTree(block.transactions)
+        block.merkle_root = block._merkle_tree.root
+        block.nonce = 0
+        block.recompute_hash()
+        chain._mine(block)
+        chain.append_block(block)
+
+        self.assertFalse(chain.is_valid())
+
 
 if __name__ == "__main__":
     unittest.main()

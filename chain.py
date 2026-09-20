@@ -307,6 +307,10 @@ class Blockchain:
 
             for j, tx in enumerate(current.transactions):
                 if j == 0:
+                    if not tx.is_valid():
+                        print(f"invalid coinbase at block {i}")
+                        return False
+
                     # Coinbase: apply outputs, skip input validation
                     for k, out in enumerate(tx.outputs):
                         replay_utxo.add(UTXO(tx.tx_id, k, out["address"], out["amount"]))
