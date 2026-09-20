@@ -54,6 +54,7 @@ def serialize_block(block: Block) -> dict:
         "timestamp"     : block.timestamp,
         "previous_hash" : block.previous_hash,
         "hash"          : block.hash,
+        "difficulty"    : block.difficulty,
         "nonce"         : block.nonce,
         "transactions"  : [serialize_transaction(tx) for tx in block.transactions]
     }
@@ -65,6 +66,7 @@ def deserialize_block(data: dict) -> Block:
     block.timestamp     = data["timestamp"]
     block.previous_hash = data["previous_hash"]
     block.hash          = data["hash"]
+    block.difficulty    = data["difficulty"]
     block.nonce         = data["nonce"]
     block.transactions  = [deserialize_transaction(tx) for tx in data["transactions"]]
     block._merkle_tree  = MerkleTree(block.transactions)
