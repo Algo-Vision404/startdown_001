@@ -57,16 +57,31 @@ class ChainStore:
             candidate          = Blockchain.__new__(Blockchain)
             candidate.chain    = [deserialize_block(b) for b in chain_data]
 
-            # Load UTXO set if it exists, otherwise rebuild from chain
+            replayed_utxo = UTXOSet()
+            for block in candidate.chain:
+                replayed_utxo.apply_block(block)
+
+            # A persisted UTXO snapshot is only a cache. Verify it against
+            # the chain replay before using it as the node's live state.
             if os.path.exists(self.utxo_path):
                 with open(self.utxo_path, "r") as f:
                     utxo_data = json.load(f)
-                candidate.utxo_set = UTXOSet.from_dict(utxo_data)
-            else:
-                # Rebuild UTXO set by replaying the chain
-                candidate.utxo_set = UTXOSet()
-                for block in candidate.chain:
-                    candidate.utxo_set.apply_block(block)
+                persisted_utxo = UTXOSet.from_dict(utxo_data)
+                persisted_keys = {
+                    (entry["tx_id"], entry["index"]):
+                    (entry["address"], entry["amount"])
+                    for entry in persisted_utxo.to_dict()
+                }
+                replayed_keys = {
+                    (entry["tx_id"], entry["index"]):
+                    (entry["address"], entry["amount"])
+                    for entry in replayed_utxo.to_dict()
+                }
+                if persisted_keys != replayed_keys:
+                    print("stored UTXO set disagrees with chain, starting fresh")
+                    return None
+
+            candidate.utxo_set = replayed_utxo
 
             if not candidate.is_valid():
                 print(f"stored chain failed validation, starting fresh")
