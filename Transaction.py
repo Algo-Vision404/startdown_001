@@ -267,6 +267,12 @@ class Transaction:
         if input_total < output_total:
             return False
 
+        # Fees are the exact remainder after outputs. Allowing the declared
+        # fee to differ would let a block miner mint arbitrary extra coins.
+        expected_fee = round(input_total - output_total, 8)
+        if self.fee < 0 or abs(self.fee - expected_fee) > 1e-8:
+            return False
+
         return self.is_valid()
 
     # ─────────────────────────────────────────────────────────
