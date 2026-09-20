@@ -168,6 +168,8 @@ async def handle_add_peer(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return err("request body must be valid JSON")
+    if not isinstance(body, dict):
+        return err("request body must be a JSON object")
 
     host = body.get("host", "").strip()
     port_raw = body.get("port")
@@ -303,6 +305,8 @@ async def handle_verify_proof(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return err("request body must be valid JSON")
+    if not isinstance(body, dict):
+        return err("request body must be a JSON object")
 
     tx_hash = body.get("tx_hash", "").strip()
     proof = body.get("proof")
@@ -491,6 +495,8 @@ async def handle_wallet_create(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return err("request body must be valid JSON")
+    if not isinstance(body, dict):
+        return err("request body must be a JSON object")
 
     name = body.get("name", "").strip()
     if not name:
@@ -583,6 +589,8 @@ async def handle_tx_send(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return err("request body must be valid JSON")
+    if not isinstance(body, dict):
+        return err("request body must be a JSON object")
 
     sender_name    = body.get("sender", "").strip()
     recipient_name = body.get("recipient", "").strip()

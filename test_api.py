@@ -69,6 +69,16 @@ class FakeRequest:
         self.match_info = {"port": str(node.port)}
 
 
+class JsonRequest:
+    def __init__(self, body):
+        self.body = body
+        self.app = {}
+        self.match_info = {}
+
+    async def json(self):
+        return self.body
+
+
 class MerkleTransaction:
     def __init__(self, tx_id):
         self.tx_id = tx_id
@@ -122,6 +132,18 @@ class TestForceMine(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([tx.tx_id for tx in node.mempool], ["remaining"])
         self.assertEqual(node.recompute_calls, 1)
         node._broadcast.assert_awaited_once()
+
+
+class TestApiJsonContracts(unittest.IsolatedAsyncioTestCase):
+    async def test_wallet_create_rejects_non_object_json(self):
+        response = await api.handle_wallet_create(JsonRequest(["alice"]))
+
+        self.assertEqual(response.status, 400)
+
+    async def test_proof_verification_rejects_non_object_json(self):
+        response = await api.handle_verify_proof(JsonRequest("not-an-object"))
+
+        self.assertEqual(response.status, 400)
 
 
 class TestMerkleRoutes(unittest.IsolatedAsyncioTestCase):
