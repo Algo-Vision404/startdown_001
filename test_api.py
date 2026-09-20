@@ -152,7 +152,7 @@ class TestMerkleRoutes(unittest.IsolatedAsyncioTestCase):
             MerkleTransaction("a" * 64),
             MerkleTransaction("b" * 64),
         ]
-        self.block = Block(0, transactions, "0" * 64)
+        self.block = Block(0, transactions, "0" * 64, difficulty=4)
 
     async def test_merkle_root_and_header_routes(self):
         request = BlockRequest(self.block)
