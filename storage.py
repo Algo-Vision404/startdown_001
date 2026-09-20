@@ -112,10 +112,19 @@ class WalletStore:
             with open(self.filepath, "r") as f:
                 raw = json.load(f)
             for name, entry in raw.items():
+                if entry.get("algorithm") != ALGORITHM:
+                    raise ValueError(
+                        f"wallet '{name}' uses an unsupported algorithm"
+                    )
+
                 wallet             = QuantumWallet.__new__(QuantumWallet)
                 wallet.public_key  = base64.b64decode(entry["public_key"])
                 wallet.private_key = base64.b64decode(entry["private_key"])
                 wallet.address     = entry["address"]
+                if wallet.address != QuantumWallet._derive_address(wallet.public_key):
+                    raise ValueError(
+                        f"wallet '{name}' has an invalid address"
+                    )
                 self._wallets[name] = wallet
         except Exception as e:
             print(f"could not load wallets: {e}")

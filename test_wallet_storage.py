@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 
@@ -23,6 +24,20 @@ class TestWalletPersistence(unittest.TestCase):
                 restored.public_key,
             )
         )
+
+    def test_corrupt_address_metadata_is_rejected(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            store = WalletStore(data_dir)
+            store.create("alice")
+            with open(store.filepath, "r") as file:
+                wallets = json.load(file)
+            wallets["alice"]["address"] = "QR_CORRUPTED"
+            with open(store.filepath, "w") as file:
+                json.dump(wallets, file)
+
+            restored = WalletStore(data_dir)
+
+        self.assertIsNone(restored.get("alice"))
 
 
 if __name__ == "__main__":
