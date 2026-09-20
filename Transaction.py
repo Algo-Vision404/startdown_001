@@ -215,6 +215,9 @@ class Transaction:
         Validate signature only.
         UTXO existence and balance checks are done by the chain.
         """
+        if self.tx_id != self._compute_tx_id():
+            return False
+
         if self.is_coinbase:
             return True
 

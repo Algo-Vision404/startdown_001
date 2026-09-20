@@ -54,6 +54,24 @@ class TestTransactionValidation(unittest.TestCase):
 
         self.assertFalse(transaction.validate_against_utxo_set(utxo_set))
 
+    def test_tampered_transaction_id_is_rejected(self):
+        wallet = QuantumWallet()
+        source_id = "d" * 64
+        utxo_set = UTXOSet()
+        utxo_set.add(UTXO(source_id, 0, wallet.address, 10.0))
+
+        transaction = Transaction.transfer(
+            sender_wallet=wallet,
+            utxo_set=utxo_set,
+            recipient_address="recipient",
+            amount=8.0,
+            fee=1.0,
+        )
+        transaction.tx_id = "e" * 64
+
+        self.assertFalse(transaction.is_valid())
+        self.assertFalse(transaction.validate_against_utxo_set(utxo_set))
+
 
 if __name__ == "__main__":
     unittest.main()
