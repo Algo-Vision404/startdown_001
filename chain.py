@@ -113,6 +113,24 @@ class Blockchain:
             if not tx.inputs or not tx.outputs:
                 return False
 
+            if (
+                isinstance(tx.fee, bool)
+                or not isinstance(tx.fee, (int, float))
+                or not math.isfinite(tx.fee)
+                or tx.fee < 0
+            ):
+                return False
+
+            for output in tx.outputs:
+                amount = output.get("amount")
+                if (
+                    isinstance(amount, bool)
+                    or not isinstance(amount, (int, float))
+                    or not math.isfinite(amount)
+                    or amount <= 0
+                ):
+                    return False
+
             input_keys = [(i["tx_id"], i["index"]) for i in tx.inputs]
 
             # No duplicate inputs within the transaction itself

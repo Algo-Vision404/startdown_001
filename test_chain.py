@@ -1,4 +1,5 @@
 import unittest
+import math
 
 from Transaction import Transaction
 from chain import Blockchain
@@ -43,6 +44,26 @@ class TestCoinbaseRules(unittest.TestCase):
             inputs=[{"tx_id": source_id, "index": 0}],
             outputs=[{"address": "recipient", "amount": 9.0}],
             fee=5.0,
+        )
+        transaction.sign(wallet)
+
+        self.assertFalse(
+            Blockchain.validate_transaction_sequence(
+                [transaction],
+                utxo_set,
+            )
+        )
+
+    def test_block_sequence_rejects_non_finite_fee(self):
+        wallet = QuantumWallet()
+        source_id = "2" * 64
+        utxo_set = UTXOSet()
+        utxo_set.add(UTXO(source_id, 0, wallet.address, 10.0))
+        transaction = Transaction(
+            sender_address=wallet.address,
+            inputs=[{"tx_id": source_id, "index": 0}],
+            outputs=[{"address": "recipient", "amount": 9.0}],
+            fee=math.nan,
         )
         transaction.sign(wallet)
 
