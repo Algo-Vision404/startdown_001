@@ -59,6 +59,7 @@ def format_block(block) -> dict:
         "index"            : block.index,
         "hash"             : block.hash,
         "previous_hash"    : block.previous_hash,
+        "difficulty"       : block.difficulty,
         "nonce"            : block.nonce,
         "timestamp"        : block.timestamp,
         "tx_count"         : block.transaction_count(),
