@@ -31,6 +31,16 @@ class TestCoinbaseRules(unittest.TestCase):
 
         self.assertFalse(chain.coinbase_reward_is_valid(block))
 
+    def test_coinbase_must_have_one_positive_output(self):
+        chain = Blockchain()
+        block = chain.mine_block([], "miner")
+        block.transactions[0].outputs.append({
+            "address": "attacker",
+            "amount": -49.0,
+        })
+
+        self.assertFalse(chain.coinbase_reward_is_valid(block))
+
 
 if __name__ == "__main__":
     unittest.main()

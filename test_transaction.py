@@ -38,6 +38,22 @@ class TestTransactionValidation(unittest.TestCase):
 
         self.assertTrue(transaction.validate_against_utxo_set(utxo_set))
 
+    def test_non_positive_output_is_rejected(self):
+        wallet = QuantumWallet()
+        source_id = "c" * 64
+        utxo_set = UTXOSet()
+        utxo_set.add(UTXO(source_id, 0, wallet.address, 10.0))
+
+        transaction = Transaction(
+            sender_address=wallet.address,
+            inputs=[{"tx_id": source_id, "index": 0}],
+            outputs=[{"address": "recipient", "amount": -1.0}],
+            fee=11.0,
+        )
+        transaction.sign(wallet)
+
+        self.assertFalse(transaction.validate_against_utxo_set(utxo_set))
+
 
 if __name__ == "__main__":
     unittest.main()

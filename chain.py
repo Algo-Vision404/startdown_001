@@ -3,6 +3,7 @@
 # Blockchain with UTXO set, block rewards, and fee collection.
 
 import json
+import math
 
 from block import Block
 from Transaction import Transaction
@@ -224,6 +225,18 @@ class Blockchain:
 
     def coinbase_reward_is_valid(self, block: Block) -> bool:
         if not block.transactions or not block.transactions[0].is_coinbase:
+            return False
+
+        outputs = block.transactions[0].outputs
+        if len(outputs) != 1:
+            return False
+        amount = outputs[0].get("amount")
+        if (
+            isinstance(amount, bool)
+            or not isinstance(amount, (int, float))
+            or not math.isfinite(amount)
+            or amount <= 0
+        ):
             return False
 
         fees = sum(tx.fee for tx in block.transactions[1:])

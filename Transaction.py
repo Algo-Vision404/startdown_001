@@ -30,6 +30,7 @@ import hashlib
 import json
 import time
 import base64
+import math
 
 from wallet import QuantumWallet, ALGORITHM
 
@@ -247,6 +248,24 @@ class Transaction:
 
         if not self.inputs or not self.outputs:
             return False
+
+        if (
+            isinstance(self.fee, bool)
+            or not isinstance(self.fee, (int, float))
+            or not math.isfinite(self.fee)
+            or self.fee < 0
+        ):
+            return False
+
+        for output in self.outputs:
+            amount = output.get("amount")
+            if (
+                isinstance(amount, bool)
+                or not isinstance(amount, (int, float))
+                or not math.isfinite(amount)
+                or amount <= 0
+            ):
+                return False
 
         # No duplicate inputs
         input_keys = [(i["tx_id"], i["index"]) for i in self.inputs]
