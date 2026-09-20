@@ -139,6 +139,10 @@ class Blockchain:
             if input_total < output_total:
                 return False
 
+            expected_fee = round(input_total - output_total, 8)
+            if tx.fee < 0 or abs(tx.fee - expected_fee) > 1e-8:
+                return False
+
             if not tx.is_valid():
                 return False
 
