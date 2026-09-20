@@ -146,7 +146,7 @@ class MerkleTree:
                     current = hash_pair(current, step.hash)
             The final current must equal the root.
         """
-        if not self._layers or tx_index >= len(self._leaves):
+        if not self._layers or tx_index < 0 or tx_index >= len(self._leaves):
             return None
 
         proof_steps = []
@@ -226,7 +226,7 @@ class MerkleTree:
 
     def leaf_hash(self, tx_index: int) -> Optional[str]:
         """Return the leaf hash for a transaction by index."""
-        if tx_index >= len(self._leaves):
+        if tx_index < 0 or tx_index >= len(self._leaves):
             return None
         return self._leaves[tx_index]
 

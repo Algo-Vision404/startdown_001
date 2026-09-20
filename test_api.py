@@ -178,6 +178,12 @@ class TestMerkleRoutes(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status, 404)
 
+    def test_merkle_tree_rejects_negative_indexes(self):
+        tree = self.block._merkle_tree
+
+        self.assertIsNone(tree.proof(-1))
+        self.assertIsNone(tree.leaf_hash(-1))
+
 
 if __name__ == "__main__":
     unittest.main()
