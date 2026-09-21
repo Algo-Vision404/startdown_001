@@ -47,6 +47,12 @@ class Blockchain:
     # dated arbitrarily far into the future should never be accepted.
     MAX_FUTURE_DRIFT_SEC = 7200
 
+    # A block's timestamp must exceed the median of this many
+    # immediately preceding blocks (median-time-past, as in Bitcoin),
+    # rather than simply exceeding its immediate parent's timestamp.
+    # See _median_time_past() for why this matters.
+    MEDIAN_TIME_SPAN = 11
+
     def __init__(self):
         self.chain    : list[Block] = []
         self.utxo_set : UTXOSet     = UTXOSet()
@@ -300,6 +306,36 @@ class Blockchain:
         """
         return sum(16 ** block.difficulty for block in chain[1:])
 
+    @staticmethod
+    def _median_time_past(chain: list, i: int) -> float:
+        """
+        Median timestamp of up to MEDIAN_TIME_SPAN blocks immediately
+        preceding index i in `chain` (Bitcoin's median-time-past rule).
+
+        Why not just require current.timestamp > previous.timestamp?
+        That was the original check here, and it is enough to stop a
+        block from being backdated before its own parent -- but it is
+        not enough to stop a more patient attacker. Since the parent's
+        timestamp is itself attacker-controlled data in a chain they
+        are constructing, they could set up a series of blocks that are
+        each individually increasing versus their own immediate parent,
+        while still steering the sequence toward a favorable difficulty
+        retarget outcome. Comparing against the median of a whole
+        recent window instead of a single value is far more resistant
+        to that: moving the median meaningfully requires manipulating
+        most of the window, not just the one block right before the
+        new one. It also matches real-world behavior better -- a
+        block's timestamp is allowed to sit before its immediate
+        parent's (real miners' clocks are never perfectly
+        synchronized), as long as it still exceeds the recent median.
+        """
+        window = chain[max(0, i - Blockchain.MEDIAN_TIME_SPAN):i]
+        timestamps = sorted(b.timestamp for b in window)
+        mid = len(timestamps) // 2
+        if len(timestamps) % 2 == 1:
+            return timestamps[mid]
+        return (timestamps[mid - 1] + timestamps[mid]) / 2
+
     # ─────────────────────────────────────────────────────────
     # Mining
     # ─────────────────────────────────────────────────────────
@@ -445,18 +481,17 @@ class Blockchain:
                 print(f"linkage failure at block {i}")
                 return False
 
-            # Timestamps must strictly increase. This is cheap and always
-            # safe to check on replay (real time only moves forward, so a
-            # legitimately-created chain never starts failing this later).
-            # It also closes part of the timestamp-fabrication angle on
-            # the difficulty retarget: an attacker can't backdate a block
-            # to sit before its parent to manipulate a retarget window.
-            # It is not a complete defense (a forward-dated but still-
-            # increasing timestamp is still possible); real chains use
-            # median-time-past and max-future-drift rules for that, which
-            # is future work here.
-            if current.timestamp <= previous.timestamp:
-                print(f"non-increasing timestamp at block {i}")
+            # Timestamp must exceed the median of the recent window, not
+            # merely its immediate parent -- see _median_time_past() for
+            # why. This is still safe to check unconditionally on replay:
+            # it depends only on the chain's own recorded timestamps, not
+            # the current wall clock.
+            mtp = self._median_time_past(self.chain, i)
+            if current.timestamp <= mtp:
+                print(
+                    f"timestamp at block {i} does not exceed "
+                    f"median-time-past ({current.timestamp} <= {mtp})"
+                )
                 return False
 
             # A block dated too far into the future relative to the
