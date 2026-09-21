@@ -609,9 +609,19 @@ class Node:
                 build(MessageType.BLOCK, self.port, serialize_block(block))
             )
 
-        elif block.index > last.index + 1:
+        elif block.index >= last.index:
+            # Either we're behind (block.index > last.index + 1), or this
+            # block conflicts with our tip -- same index as ours (a fork
+            # at our current height) or index == last.index + 1 with a
+            # previous_hash that doesn't match (a fork attempt one block
+            # ahead). All three used to fall through here silently for
+            # the first two cases; now every one of them asks for the
+            # full candidate chain so _on_chain can decide by cumulative
+            # work rather than just dropping a legitimate competing block.
             logging.info(
-                f"[{self.port}] behind, requesting chain"
+                f"[{self.port}] observed a competing or ahead block "
+                f"(index={block.index}, ours={last.index}), "
+                f"requesting chain to compare work"
             )
             await self._broadcast(
                 build(MessageType.REQUEST_CHAIN, self.port)
@@ -622,9 +632,6 @@ class Node:
     # ─────────────────────────────────────────────────────────
 
     async def _on_chain(self, chain_data: list):
-        if len(chain_data) <= len(self.chain.chain):
-            return
-
         try:
             candidate_blocks = [deserialize_block(b) for b in chain_data]
         except Exception as e:
@@ -641,6 +648,19 @@ class Node:
             logging.warning(
                 f"[{self.port}] rejected chain with an unknown genesis block"
             )
+            return
+
+        # Compare total proof-of-work, not block count. With difficulty
+        # now varying over time (see chain.py's retargeting), a longer
+        # chain of easier blocks is not necessarily the one representing
+        # more real mining effort -- cumulative_work() is what fork
+        # resolution should actually be deciding on. This also means we
+        # can cheaply reject a weaker candidate before paying for the
+        # full is_valid() replay below.
+        candidate_work = Blockchain.cumulative_work(candidate.chain)
+        current_work   = Blockchain.cumulative_work(self.chain.chain)
+
+        if candidate_work <= current_work:
             return
 
         for block in candidate.chain:
@@ -665,8 +685,9 @@ class Node:
             self._recompute_pending_inputs()
 
             logging.info(
-                f"[{self.port}] adopted longer chain "
-                f"{old_height} -> {self.chain.height()}"
+                f"[{self.port}] adopted a chain with more work "
+                f"(height {old_height} -> {self.chain.height()}, "
+                f"work {current_work} -> {candidate_work})"
             )
 
     # ─────────────────────────────────────────────────────────
