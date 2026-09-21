@@ -3,8 +3,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from message import MessageType, build
+from message import MessageType, build, parse, serialize_block
 from node import Node
+from chain import Blockchain
 from Transaction import Transaction
 from utxo import UTXO
 from wallet import QuantumWallet
@@ -51,6 +52,74 @@ class TestPeerMessageHandling(unittest.IsolatedAsyncioTestCase):
         await self.node._on_chain([{"missing": "fields"}, {"also": "bad"}])
 
         self.assertEqual(self.node.chain.height(), 1)
+
+    async def test_competing_block_at_same_height_triggers_chain_request(self):
+        # Previously, a block whose index equaled our tip's index (a fork
+        # at our current height) fell through _on_block's dispatch with
+        # no branch handling it at all -- silently dropped. It should
+        # instead ask for the full candidate chain so _on_chain can
+        # decide via cumulative work.
+        fake_block = SimpleNamespace(
+            hash="fork-hash-not-seen",
+            index=self.node.chain.chain[-1].index,
+            previous_hash="does-not-match-our-tip",
+        )
+        self.node._broadcast = AsyncMock()
+
+        await self.node._on_block(fake_block)
+
+        self.node._broadcast.assert_awaited_once()
+        sent = parse(self.node._broadcast.call_args.args[0])
+        self.assertEqual(sent["type"], MessageType.REQUEST_CHAIN)
+
+
+class TestForkResolution(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.data_dir = tempfile.TemporaryDirectory()
+        self.node = Node("127.0.0.1", 23235, data_dir=self.data_dir.name)
+
+    async def asyncTearDown(self):
+        self.data_dir.cleanup()
+
+    async def test_weaker_candidate_chain_is_rejected_before_validation(self):
+        # Give the node some real work of its own first.
+        block = self.node.chain.mine_block([], "miner")
+        self.node.chain.append_block(block)
+        self.assertEqual(self.node.chain.height(), 2)
+
+        # A candidate representing just the genesis block has zero
+        # cumulative work -- strictly weaker than what the node already
+        # has -- so it must be rejected at the cheap work-comparison gate
+        # without the node ever needing to run a full validity replay
+        # (and, in particular, without changing anything).
+        genesis_only = [serialize_block(self.node.chain.chain[0])]
+
+        await self.node._on_chain(genesis_only)
+
+        self.assertEqual(self.node.chain.height(), 2)
+
+    async def test_heavier_real_chain_is_adopted(self):
+        # Node's own chain: one real mined block.
+        own_block = self.node.chain.mine_block([], "miner")
+        self.node.chain.append_block(own_block)
+        self.assertEqual(self.node.chain.height(), 2)
+
+        # An independently built chain sharing the same genesis, with
+        # two real mined blocks -- both more blocks and more cumulative
+        # work than the node's own chain, so this exercises the ordinary
+        # "adopt the better chain" path after the cumulative-work gate.
+        candidate_chain = Blockchain()
+        b1 = candidate_chain.mine_block([], "other-miner")
+        candidate_chain.append_block(b1)
+        b2 = candidate_chain.mine_block([], "other-miner")
+        candidate_chain.append_block(b2)
+
+        chain_data = [serialize_block(b) for b in candidate_chain.chain]
+
+        await self.node._on_chain(chain_data)
+
+        self.assertEqual(self.node.chain.height(), 3)
+        self.assertEqual(self.node.chain.chain[-1].hash, b2.hash)
 
 
 class TestMempoolEviction(unittest.IsolatedAsyncioTestCase):
