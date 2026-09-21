@@ -265,6 +265,33 @@ class Blockchain:
 
         return max(self.MIN_DIFFICULTY, min(self.MAX_DIFFICULTY, new_difficulty))
 
+    @staticmethod
+    def cumulative_work(chain: list) -> int:
+        """
+        Total proof-of-work represented by a chain, used to decide which
+        of two competing chains is the "real" one during fork resolution.
+
+        A block requiring d leading hex-zero digits takes an expected
+        16**d hash attempts to find (each hex digit has a 1-in-16 chance
+        of being zero), so summing 16**difficulty across blocks gives a
+        chain's total expected mining effort.
+
+        This matters specifically because difficulty now varies over
+        time (see expected_difficulty() above): comparing chains by
+        raw block count, as before, is no longer equivalent to comparing
+        by actual work done. A chain of many easy low-difficulty blocks
+        could out-length a chain of fewer but harder blocks -- letting
+        an attacker who can influence a chain's retarget history (e.g.
+        by fabricating block timestamps) mine a cheap alternate chain
+        that out-races a legitimate one under a pure "longest wins" rule.
+        Comparing cumulative work instead of length closes that gap.
+
+        The genesis block is excluded: it is identical across every
+        valid chain (is_valid() enforces this), so including it would
+        only add a constant offset to both sides of any comparison.
+        """
+        return sum(16 ** block.difficulty for block in chain[1:])
+
     # ─────────────────────────────────────────────────────────
     # Mining
     # ─────────────────────────────────────────────────────────
@@ -408,6 +435,20 @@ class Blockchain:
 
             if current.previous_hash != previous.hash:
                 print(f"linkage failure at block {i}")
+                return False
+
+            # Timestamps must strictly increase. This is cheap and always
+            # safe to check on replay (real time only moves forward, so a
+            # legitimately-created chain never starts failing this later).
+            # It also closes part of the timestamp-fabrication angle on
+            # the difficulty retarget: an attacker can't backdate a block
+            # to sit before its parent to manipulate a retarget window.
+            # It is not a complete defense (a forward-dated but still-
+            # increasing timestamp is still possible); real chains use
+            # median-time-past and max-future-drift rules for that, which
+            # is future work here.
+            if current.timestamp <= previous.timestamp:
+                print(f"non-increasing timestamp at block {i}")
                 return False
 
             expected_diff = self.expected_difficulty(self.chain[:i])
