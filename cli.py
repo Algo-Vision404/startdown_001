@@ -322,7 +322,7 @@ class CLI:
         if sub == "status":
             print(
                 f"\n{'PORT':<8} {'HEIGHT':<8} {'VALID':<8} "
-                f"{'MEMPOOL':<10} {'MINING':<8} {'TIP HASH':<36} PEERS"
+                f"{'DIFF':<6} {'MEMPOOL':<10} {'MINING':<8} {'TIP HASH':<36} PEERS"
             )
             print("─" * 100)
             for node in self.nodes:
@@ -331,6 +331,7 @@ class CLI:
                     f"{s['port']:<8} "
                     f"{s['height']:<8} "
                     f"{str(s['chain_valid']):<8} "
+                    f"{s['difficulty']:<6} "
                     f"{s['mempool']:<10} "
                     f"{str(s['mining']):<8} "
                     f"{s['tip_hash']:<36} "
@@ -405,6 +406,7 @@ class CLI:
         print(f"\nblock {block.index}")
         print(f"  hash             : {block.hash}")
         print(f"  previous_hash    : {block.previous_hash}")
+        print(f"  difficulty       : {block.difficulty}")
         print(f"  nonce            : {block.nonce}")
         print(f"  timestamp        : {block.timestamp}")
         print(f"  transactions     : {block.transaction_count()}")
