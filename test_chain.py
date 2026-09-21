@@ -222,6 +222,48 @@ class TestDifficultyRetargeting(unittest.TestCase):
 
         self.assertFalse(chain.is_valid())
 
+    def test_full_chain_validation_rejects_non_increasing_timestamp(self):
+        chain = Blockchain()
+        block = chain.mine_block([], "miner")
+
+        # Backdate the block to the same instant as genesis (0.0).
+        # Header hash must be recomputed to stay internally consistent,
+        # and PoW re-mined so it still satisfies its own difficulty --
+        # the only thing this should fail on is the timestamp check.
+        block.timestamp = 0.0
+        block.recompute_hash()
+        chain._mine(block)
+        chain.append_block(block)
+
+        self.assertFalse(chain.is_valid())
+
+
+class TestCumulativeWork(unittest.TestCase):
+    def test_excludes_genesis(self):
+        chain = [
+            SimpleNamespace(difficulty=4, timestamp=0.0),  # genesis
+        ]
+        self.assertEqual(Blockchain.cumulative_work(chain), 0)
+
+    def test_sums_16_pow_difficulty_across_real_blocks(self):
+        chain = _fake_chain([(4, 0.0), (4, 1.0), (5, 2.0)])
+        expected = 16 ** 4 + 16 ** 5
+        self.assertEqual(Blockchain.cumulative_work(chain), expected)
+
+    def test_shorter_harder_chain_outweighs_longer_easier_chain(self):
+        # This is the exact scenario a pure "longest chain wins" rule
+        # gets wrong once difficulty varies: 3 blocks at difficulty 8
+        # represent far more real work than 50 blocks at difficulty 1,
+        # even though the second chain has many more blocks.
+        heavy_short = _fake_chain([(8, 0.0)] + [(8, float(i)) for i in range(1, 4)])
+        light_long  = _fake_chain([(1, 0.0)] + [(1, float(i)) for i in range(1, 51)])
+
+        self.assertGreater(
+            Blockchain.cumulative_work(heavy_short),
+            Blockchain.cumulative_work(light_long)
+        )
+        self.assertGreater(len(light_long), len(heavy_short))
+
 
 if __name__ == "__main__":
     unittest.main()
