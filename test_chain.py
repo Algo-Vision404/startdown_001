@@ -1,5 +1,6 @@
 import unittest
 import math
+import time
 from types import SimpleNamespace
 
 from Transaction import Transaction
@@ -231,6 +232,20 @@ class TestDifficultyRetargeting(unittest.TestCase):
         # and PoW re-mined so it still satisfies its own difficulty --
         # the only thing this should fail on is the timestamp check.
         block.timestamp = 0.0
+        block.recompute_hash()
+        chain._mine(block)
+        chain.append_block(block)
+
+        self.assertFalse(chain.is_valid())
+
+    def test_full_chain_validation_rejects_far_future_timestamp(self):
+        chain = Blockchain()
+        block = chain.mine_block([], "miner")
+
+        # Well past MAX_FUTURE_DRIFT_SEC (2 hours) ahead of "now".
+        # Same pattern as the backdating test above: recompute the
+        # header hash and re-mine PoW so only the drift check can fail.
+        block.timestamp = time.time() + chain.MAX_FUTURE_DRIFT_SEC + 3600
         block.recompute_hash()
         chain._mine(block)
         chain.append_block(block)
