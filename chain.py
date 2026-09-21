@@ -4,6 +4,7 @@
 
 import json
 import math
+import time
 
 from block import Block
 from Transaction import Transaction
@@ -38,6 +39,13 @@ class Blockchain:
     MAX_DIFFICULTY      = 8
     TARGET_BLOCK_TIME   = 30     # seconds, desired average time per block
     RETARGET_INTERVAL   = 10     # blocks between difficulty adjustments
+
+    # A block's timestamp may not sit further ahead of the wall clock,
+    # at validation time, than this many seconds. Mirrors Bitcoin's
+    # 2-hour future-drift tolerance: real nodes' clocks are never
+    # perfectly synchronized, so some slack is needed, but a block
+    # dated arbitrarily far into the future should never be accepted.
+    MAX_FUTURE_DRIFT_SEC = 7200
 
     def __init__(self):
         self.chain    : list[Block] = []
@@ -449,6 +457,19 @@ class Blockchain:
             # is future work here.
             if current.timestamp <= previous.timestamp:
                 print(f"non-increasing timestamp at block {i}")
+                return False
+
+            # A block dated too far into the future relative to the
+            # wall clock at validation time is rejected outright. This
+            # is safe to check even on replay of an old, legitimate
+            # chain: real time only moves forward, so a block that was
+            # NOT future-dated when it was actually created can never
+            # start failing this check later -- it only ever catches a
+            # block that, right now, still claims a suspiciously future
+            # timestamp (fabrication, or severe clock skew on the
+            # mining node).
+            if current.timestamp > time.time() + self.MAX_FUTURE_DRIFT_SEC:
+                print(f"timestamp too far in the future at block {i}")
                 return False
 
             expected_diff = self.expected_difficulty(self.chain[:i])
