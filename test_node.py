@@ -327,16 +327,38 @@ class TestPeerPenalization(unittest.IsolatedAsyncioTestCase):
         # rejection -- not evidence the peer is misbehaving. Only
         # malformed (undeserializable) data should count as a strike.
         from message import serialize_transaction
-        from Transaction import Transaction
 
-        bogus_tx = Transaction.coinbase("attacker", 999.0)  # well-formed dict shape
+        unsigned_tx = Transaction(
+            sender_address="some-address",
+            inputs=[{"tx_id": "1" * 64, "index": 0}],
+            outputs=[{"address": "recipient", "amount": 5.0}],
+            fee=1.0,
+        )  # never signed -- well-formed shape, fails signature verification
         message = build(
-            MessageType.TRANSACTION, 23237, serialize_transaction(bogus_tx)
+            MessageType.TRANSACTION, 23237, serialize_transaction(unsigned_tx)
         )
 
         await self.node._process(message, self.websocket)
 
         self.assertEqual(self._peer().fail_count, 0)
+
+    async def test_directly_submitted_coinbase_transaction_is_rejected(self):
+        # A coinbase transaction is only ever valid as the first
+        # transaction mine_block() builds internally -- accepting one
+        # submitted directly would skip UTXO validation entirely (it
+        # has no real input to check) and let it into the mempool,
+        # where mine_block() would then refuse to mine any batch
+        # containing it, permanently jamming this node's mining.
+        from message import serialize_transaction
+
+        coinbase_tx = Transaction.coinbase("attacker", 999.0)
+        message = build(
+            MessageType.TRANSACTION, 23237, serialize_transaction(coinbase_tx)
+        )
+
+        await self.node._process(message, self.websocket)
+
+        self.assertEqual(self.node.mempool, [])
 
     async def test_repeated_malformed_messages_ban_and_disconnect_peer(self):
         # Give the peer an active websocket connection, matching what a
