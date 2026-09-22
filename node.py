@@ -519,32 +519,54 @@ class Node:
         if tx.tx_id in self.seen_tx_ids:
             return
 
+        if tx.is_coinbase:
+            # A coinbase transaction is only ever valid as the first
+            # transaction of a mined block (see chain.py's mine_block(),
+            # which builds it internally and explicitly refuses one
+            # submitted this way). Accepting one here would be worse
+            # than merely wrong: the block below that skips UTXO
+            # validation "if not tx.is_coinbase" would let it straight
+            # into the mempool, and mine_block() raises the moment it's
+            # ever included in a to-be-mined batch -- so a single
+            # crafted message would permanently jam mining on any node
+            # whose mempool includes it, without any UTXO check ever
+            # having to catch it (there's no input to check). Reject
+            # it before that block is reached.
+            logging.warning(
+                f"[{self.port}] rejected transaction claiming to be "
+                f"coinbase (coinbase transactions are never accepted "
+                f"directly from the network)"
+            )
+            return
+
         if not tx.is_valid():
             logging.warning(
                 f"[{self.port}] rejected invalid tx {tx.tx_id[:16]}"
             )
             return
 
-        if not tx.is_coinbase:
-            if not tx.validate_against_utxo_set(self.chain.utxo_set):
-                logging.warning(
-                    f"[{self.port}] rejected tx {tx.tx_id[:16]}: "
-                    f"UTXO validation failed"
-                )
-                return
+        # A coinbase transaction can never reach this point (rejected
+        # above), so every transaction here genuinely has inputs to
+        # validate against the UTXO set.
+        if not tx.validate_against_utxo_set(self.chain.utxo_set):
+            logging.warning(
+                f"[{self.port}] rejected tx {tx.tx_id[:16]}: "
+                f"UTXO validation failed"
+            )
+            return
 
-            # Reject if this transaction's inputs conflict with a
-            # transaction already sitting in the mempool (first-seen wins).
-            keys = self._input_keys(tx)
-            if keys & self.pending_inputs:
-                logging.warning(
-                    f"[{self.port}] rejected tx {tx.tx_id[:16]}: "
-                    f"conflicts with a pending mempool transaction "
-                    f"(double-spend attempt)"
-                )
-                return
+        # Reject if this transaction's inputs conflict with a
+        # transaction already sitting in the mempool (first-seen wins).
+        keys = self._input_keys(tx)
+        if keys & self.pending_inputs:
+            logging.warning(
+                f"[{self.port}] rejected tx {tx.tx_id[:16]}: "
+                f"conflicts with a pending mempool transaction "
+                f"(double-spend attempt)"
+            )
+            return
 
-            self.pending_inputs |= keys
+        self.pending_inputs |= keys
 
         self.seen_tx_ids.add(tx.tx_id)
         self.mempool.append(tx)
