@@ -32,6 +32,14 @@ class Node:
     PEER_SAVE_SEC      = 120    # how often to save peer list to disk
     PING_INTERVAL_SEC  = 30     # how often to ping connected peers
 
+    # Minimum time between REQUEST_CHAIN broadcasts triggered by an
+    # incoming competing/ahead block. Without this, a peer can send an
+    # endless stream of uniquely-hashed garbage "blocks" -- each one
+    # cheap to produce, none of them needing valid PoW or a real chain
+    # behind them -- and each one would trigger a broadcast to every
+    # connected peer at zero cost to the sender. See _on_block().
+    CHAIN_REQUEST_COOLDOWN_SEC = 5.0
+
     def __init__(
         self,
         host       : str,
@@ -60,6 +68,11 @@ class Node:
         self.mining        = False
         self.miner_address = "MINER_UNSET"
         self._server       = None
+
+        # Last time a REQUEST_CHAIN broadcast was sent in response to a
+        # competing/ahead block, so repeated fake blocks from one peer
+        # can't cheaply trigger repeated broadcasts to everyone we know.
+        self._last_chain_request_time = 0.0
 
     # ─────────────────────────────────────────────────────────
     # Startup
@@ -274,6 +287,32 @@ class Node:
         msg = build(MessageType.GET_PEERS, self.port)
         await self._broadcast(msg)
 
+    async def _penalize_peer(self, sender_port: int, reason: str) -> None:
+        """
+        Record a strike against a peer for sending structurally
+        malformed data (not just data we happen to disagree with --
+        see the callers for why this is scoped to malformed, not
+        merely invalid-per-our-current-state, data). Reuses the
+        existing connection-failure tracking in PeerManager, so a
+        peer sending enough bad messages gets banned the same way one
+        that keeps failing to connect does. If that tips them over
+        into BANNED, disconnect them too -- otherwise they'd stay
+        actively connected and able to keep sending more garbage
+        despite being banned from future reconnection.
+        """
+        if not sender_port:
+            return
+        for peer_info in self.peer_mgr.all_peers():
+            if peer_info.port == sender_port:
+                logging.warning(
+                    f"[{self.port}] penalizing {peer_info.host}:"
+                    f"{sender_port} for {reason}"
+                )
+                self.peer_mgr.mark_failed(peer_info.host, sender_port)
+                if peer_info.state == PeerState.BANNED:
+                    await self._disconnect_peer(sender_port)
+                break
+
     # ─────────────────────────────────────────────────────────
     # Connection handlers
     # ─────────────────────────────────────────────────────────
@@ -328,21 +367,25 @@ class Node:
             if data:
                 try:
                     tx = deserialize_transaction(data)
-                    await self._on_transaction(tx)
                 except Exception as e:
                     logging.warning(
                         f"[{self.port}] rejected malformed transaction: {e}"
                     )
+                    await self._penalize_peer(sender_port, "malformed transaction")
+                else:
+                    await self._on_transaction(tx)
 
         elif msg_type == MessageType.BLOCK:
             if data:
                 try:
                     block = deserialize_block(data)
-                    await self._on_block(block)
                 except Exception as e:
                     logging.warning(
                         f"[{self.port}] rejected malformed block: {e}"
                     )
+                    await self._penalize_peer(sender_port, "malformed block")
+                else:
+                    await self._on_block(block)
 
         elif msg_type == MessageType.REQUEST_CHAIN:
             chain_data = [serialize_block(b) for b in self.chain.chain]
@@ -352,7 +395,7 @@ class Node:
 
         elif msg_type == MessageType.CHAIN:
             if data:
-                await self._on_chain(data)
+                await self._on_chain(data, sender_port)
 
         elif msg_type == MessageType.PING:
             await websocket.send(build(MessageType.PONG, self.port))
@@ -618,6 +661,19 @@ class Node:
             # the first two cases; now every one of them asks for the
             # full candidate chain so _on_chain can decide by cumulative
             # work rather than just dropping a legitimate competing block.
+            #
+            # This request is cooldown-limited (not per-block): a peer
+            # can produce an endless stream of uniquely-hashed, cheap
+            # "blocks" that reach this branch without needing valid PoW
+            # or a real chain behind them (the deeper checks only run
+            # once we actually fetch and validate a candidate chain in
+            # _on_chain), so without a cooldown here, each one would be
+            # a free trigger for a broadcast to every peer we know.
+            now = time.time()
+            if now - self._last_chain_request_time < self.CHAIN_REQUEST_COOLDOWN_SEC:
+                return
+            self._last_chain_request_time = now
+
             logging.info(
                 f"[{self.port}] observed a competing or ahead block "
                 f"(index={block.index}, ours={last.index}), "
@@ -631,13 +687,14 @@ class Node:
     # Chain sync
     # ─────────────────────────────────────────────────────────
 
-    async def _on_chain(self, chain_data: list):
+    async def _on_chain(self, chain_data: list, sender_port: int = None):
         try:
             candidate_blocks = [deserialize_block(b) for b in chain_data]
         except Exception as e:
             logging.warning(
                 f"[{self.port}] rejected malformed chain: {e}"
             )
+            await self._penalize_peer(sender_port, "malformed chain")
             return
 
         candidate          = Blockchain.__new__(Blockchain)
