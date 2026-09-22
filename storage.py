@@ -60,32 +60,56 @@ class ChainStore:
             replayed_utxo = UTXOSet()
             for block in candidate.chain:
                 replayed_utxo.apply_block(block)
-
-            # A persisted UTXO snapshot is only a cache. Verify it against
-            # the chain replay before using it as the node's live state.
-            if os.path.exists(self.utxo_path):
-                with open(self.utxo_path, "r") as f:
-                    utxo_data = json.load(f)
-                persisted_utxo = UTXOSet.from_dict(utxo_data)
-                persisted_keys = {
-                    (entry["tx_id"], entry["index"]):
-                    (entry["address"], entry["amount"])
-                    for entry in persisted_utxo.to_dict()
-                }
-                replayed_keys = {
-                    (entry["tx_id"], entry["index"]):
-                    (entry["address"], entry["amount"])
-                    for entry in replayed_utxo.to_dict()
-                }
-                if persisted_keys != replayed_keys:
-                    print("stored UTXO set disagrees with chain, starting fresh")
-                    return None
-
             candidate.utxo_set = replayed_utxo
 
             if not candidate.is_valid():
                 print(f"stored chain failed validation, starting fresh")
                 return None
+
+            # The persisted UTXO snapshot is only a cache; the chain
+            # itself, now fully validated above, is the source of
+            # truth the snapshot is always a deterministic function
+            # of. save() below writes the chain file and the UTXO
+            # file as two separate atomic writes -- not one atomic
+            # unit together -- so a crash between them (during a
+            # reorg, say) leaves a stale snapshot next to an
+            # otherwise perfectly good chain. Since a mismatch here
+            # can only ever mean the snapshot is stale (never that
+            # the already-validated chain is untrustworthy), repair
+            # it from the chain rather than discarding a valid
+            # chain's entire history over a cache file.
+            needs_repair = True
+            if os.path.exists(self.utxo_path):
+                try:
+                    with open(self.utxo_path, "r") as f:
+                        utxo_data = json.load(f)
+                    persisted_utxo = UTXOSet.from_dict(utxo_data)
+                    persisted_keys = {
+                        (entry["tx_id"], entry["index"]):
+                        (entry["address"], entry["amount"])
+                        for entry in persisted_utxo.to_dict()
+                    }
+                    replayed_keys = {
+                        (entry["tx_id"], entry["index"]):
+                        (entry["address"], entry["amount"])
+                        for entry in replayed_utxo.to_dict()
+                    }
+                    needs_repair = persisted_keys != replayed_keys
+                except Exception:
+                    needs_repair = True  # snapshot unreadable/corrupt
+
+            if needs_repair:
+                print(
+                    "stored UTXO snapshot was stale, missing, or "
+                    "unreadable; repairing it from the validated chain"
+                )
+                try:
+                    _atomic_write(
+                        self.utxo_path,
+                        json.dumps(replayed_utxo.to_dict(), indent=2)
+                    )
+                except Exception as e:
+                    print(f"could not repair UTXO snapshot: {e}")
 
             return candidate
 
