@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 from message import MessageType, build, parse, serialize_block
 from node import Node
 from chain import Blockchain
+from peer_manager import PeerState
 from Transaction import Transaction
 from utxo import UTXO
 from wallet import QuantumWallet
@@ -280,6 +281,129 @@ class TestMempoolEvictionIntegration(unittest.IsolatedAsyncioTestCase):
         # wrongly rejected as a double-spend.
         evicted_key = (str(2) * 64, 0)  # index 1 -> source_id "2"*64
         self.assertNotIn(evicted_key, self.node.pending_inputs)
+
+
+class TestPeerPenalization(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.data_dir = tempfile.TemporaryDirectory()
+        self.node = Node("127.0.0.1", 23236, data_dir=self.data_dir.name)
+        self.websocket = AsyncMock()
+        # Register the sender as a known peer so _penalize_peer can find
+        # it by port -- it has no way to penalize a peer it doesn't know.
+        self.node.peer_mgr.add("127.0.0.1", 23237)
+
+    async def asyncTearDown(self):
+        self.data_dir.cleanup()
+
+    def _peer(self):
+        return next(
+            p for p in self.node.peer_mgr.all_peers() if p.port == 23237
+        )
+
+    async def test_malformed_transaction_penalizes_sender(self):
+        message = build(MessageType.TRANSACTION, 23237, {"missing": "fields"})
+
+        await self.node._process(message, self.websocket)
+
+        self.assertEqual(self._peer().fail_count, 1)
+
+    async def test_malformed_block_penalizes_sender(self):
+        message = build(MessageType.BLOCK, 23237, {"missing": "fields"})
+
+        await self.node._process(message, self.websocket)
+
+        self.assertEqual(self._peer().fail_count, 1)
+
+    async def test_malformed_chain_penalizes_sender(self):
+        await self.node._on_chain(
+            [{"missing": "fields"}, {"also": "bad"}], sender_port=23237
+        )
+
+        self.assertEqual(self._peer().fail_count, 1)
+
+    async def test_well_formed_but_invalid_data_is_not_penalized(self):
+        # A structurally well-formed but semantically invalid message
+        # (fails signature/UTXO checks, say) is a normal, expected
+        # rejection -- not evidence the peer is misbehaving. Only
+        # malformed (undeserializable) data should count as a strike.
+        from message import serialize_transaction
+        from Transaction import Transaction
+
+        bogus_tx = Transaction.coinbase("attacker", 999.0)  # well-formed dict shape
+        message = build(
+            MessageType.TRANSACTION, 23237, serialize_transaction(bogus_tx)
+        )
+
+        await self.node._process(message, self.websocket)
+
+        self.assertEqual(self._peer().fail_count, 0)
+
+    async def test_repeated_malformed_messages_ban_and_disconnect_peer(self):
+        # Give the peer an active websocket connection, matching what a
+        # real malicious peer would have while flooding us with garbage.
+        self.node.peers[23237] = self.websocket
+
+        message = build(MessageType.BLOCK, 23237, {"missing": "fields"})
+        for _ in range(self.node.peer_mgr.BAN_AFTER):
+            await self.node._process(message, self.websocket)
+
+        self.assertEqual(self._peer().state, PeerState.BANNED)
+        # A banned peer that was actively connected should be
+        # disconnected, not left able to keep sending more garbage.
+        self.assertNotIn(23237, self.node.peers)
+
+    async def test_unrecognized_sender_port_is_not_an_error(self):
+        # A malformed message from a port we've never registered as a
+        # peer (e.g. spoofed sender_port) should not raise -- there's
+        # simply no one to penalize.
+        message = build(MessageType.BLOCK, 99999, {"missing": "fields"})
+
+        await self.node._process(message, self.websocket)  # must not raise
+
+
+class TestChainRequestCooldown(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.data_dir = tempfile.TemporaryDirectory()
+        self.node = Node("127.0.0.1", 23238, data_dir=self.data_dir.name)
+        self.node._broadcast = AsyncMock()
+
+    async def asyncTearDown(self):
+        self.data_dir.cleanup()
+
+    async def test_repeated_competing_blocks_only_broadcast_once_within_cooldown(self):
+        # Each block has a unique hash (so seen_block_hashes dedup does
+        # not apply) but all conflict with the tip the same way. Without
+        # the cooldown, each one would independently trigger a broadcast.
+        last = self.node.chain.chain[-1]
+        for i in range(10):
+            fake_block = SimpleNamespace(
+                hash=f"fork-hash-{i}",
+                index=last.index,
+                previous_hash="does-not-match-our-tip",
+            )
+            await self.node._on_block(fake_block)
+
+        self.node._broadcast.assert_awaited_once()
+
+    async def test_broadcast_resumes_after_cooldown_elapses(self):
+        last = self.node.chain.chain[-1]
+        first_block = SimpleNamespace(
+            hash="fork-hash-a", index=last.index, previous_hash="mismatch"
+        )
+        await self.node._on_block(first_block)
+        self.assertEqual(self.node._broadcast.await_count, 1)
+
+        # Simulate the cooldown window having already elapsed.
+        self.node._last_chain_request_time -= (
+            self.node.CHAIN_REQUEST_COOLDOWN_SEC + 1
+        )
+
+        second_block = SimpleNamespace(
+            hash="fork-hash-b", index=last.index, previous_hash="mismatch"
+        )
+        await self.node._on_block(second_block)
+
+        self.assertEqual(self.node._broadcast.await_count, 2)
 
 
 if __name__ == "__main__":
