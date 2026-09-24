@@ -145,6 +145,59 @@ class TestApiJsonContracts(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status, 400)
 
+    async def test_send_many_rejects_non_object_json(self):
+        response = await api.handle_tx_send_many(JsonRequest(["alice"]))
+
+        self.assertEqual(response.status, 400)
+
+    async def test_send_many_requires_sender(self):
+        response = await api.handle_tx_send_many(JsonRequest({
+            "recipients": [{"recipient": "bob", "amount": 1.0}]
+        }))
+
+        self.assertEqual(response.status, 400)
+
+    async def test_send_many_requires_non_empty_recipients_list(self):
+        response = await api.handle_tx_send_many(JsonRequest({
+            "sender": "alice",
+            "recipients": []
+        }))
+
+        self.assertEqual(response.status, 400)
+
+    async def test_send_many_rejects_recipients_that_is_not_a_list(self):
+        response = await api.handle_tx_send_many(JsonRequest({
+            "sender": "alice",
+            "recipients": "bob"
+        }))
+
+        self.assertEqual(response.status, 400)
+
+    async def test_send_many_rejects_recipient_entry_missing_amount(self):
+        response = await api.handle_tx_send_many(JsonRequest({
+            "sender": "alice",
+            "recipients": [{"recipient": "bob"}]
+        }))
+
+        self.assertEqual(response.status, 400)
+
+    async def test_send_many_rejects_non_positive_amount(self):
+        response = await api.handle_tx_send_many(JsonRequest({
+            "sender": "alice",
+            "recipients": [{"recipient": "bob", "amount": 0}]
+        }))
+
+        self.assertEqual(response.status, 400)
+
+    async def test_send_many_rejects_negative_fee(self):
+        response = await api.handle_tx_send_many(JsonRequest({
+            "sender": "alice",
+            "recipients": [{"recipient": "bob", "amount": 1.0}],
+            "fee": -1.0
+        }))
+
+        self.assertEqual(response.status, 400)
+
 
 class TestMerkleRoutes(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
