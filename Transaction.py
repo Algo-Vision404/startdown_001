@@ -101,29 +101,50 @@ class Transaction:
         return tx
 
     @classmethod
-    def transfer(
+    def transfer_many(
         cls,
         sender_wallet  : QuantumWallet,
         utxo_set,
-        recipient_address : str,
-        amount            : float,
-        fee               : float = 0.0
+        recipients     : list,   # [{"address": str, "amount": float}, ...]
+        fee            : float = 0.0
     ) -> "Transaction":
         """
-        Build and sign a transfer transaction automatically.
+        Build and sign a transaction paying multiple recipients at once.
 
-        Selects UTXOs from the sender's unspent outputs (largest first)
-        until the required amount + fee is covered. Creates a change
-        output back to the sender if the selected inputs exceed the
-        required total.
+        Generalizes transfer() -- a single-recipient payment is just the
+        len(recipients) == 1 case -- to support batching several payments
+        (payroll, an airdrop, splitting a bill) into one transaction:
+        one set of selected inputs and one fee, rather than paying the
+        fee separately for each recipient across several transactions.
 
-        This is the standard "coin selection" algorithm. Largest-first
-        minimizes the number of inputs, keeping transaction size down.
+        Selects UTXOs largest-first (same coin selection as transfer())
+        until the combined total of all recipient amounts plus the fee
+        is covered, and creates a single change output back to the
+        sender if the selected inputs exceed that total.
 
-        Raises TransactionError if the sender has insufficient funds.
+        Raises TransactionError if recipients is empty, any amount is
+        not a positive finite number, or the sender has insufficient
+        funds for the combined total.
         """
-        required = amount + fee
-        available = utxo_set.utxos_for(sender_wallet.address)
+        if not recipients:
+            raise TransactionError("at least one recipient is required")
+
+        for recipient in recipients:
+            amount = recipient.get("amount")
+            if (
+                isinstance(amount, bool)
+                or not isinstance(amount, (int, float))
+                or not math.isfinite(amount)
+                or amount <= 0
+            ):
+                raise TransactionError(
+                    f"invalid amount for recipient "
+                    f"{recipient.get('address')}: {amount}"
+                )
+
+        total_amount = sum(r["amount"] for r in recipients)
+        required     = total_amount + fee
+        available    = utxo_set.utxos_for(sender_wallet.address)
 
         if not available:
             raise TransactionError(
@@ -150,9 +171,12 @@ class Transaction:
 
         inputs = [{"tx_id": u.tx_id, "index": u.index} for u in selected]
 
-        outputs = [{"address": recipient_address, "amount": amount}]
+        outputs = [
+            {"address": r["address"], "amount": r["amount"]}
+            for r in recipients
+        ]
 
-        change = round(total_in - amount - fee, 8)
+        change = round(total_in - total_amount - fee, 8)
         if change > 0:
             outputs.append({"address": sender_wallet.address, "amount": change})
 
@@ -164,6 +188,31 @@ class Transaction:
         )
         tx.sign(sender_wallet)
         return tx
+
+    @classmethod
+    def transfer(
+        cls,
+        sender_wallet  : QuantumWallet,
+        utxo_set,
+        recipient_address : str,
+        amount            : float,
+        fee               : float = 0.0
+    ) -> "Transaction":
+        """
+        Build and sign a single-recipient transfer transaction.
+
+        A thin convenience wrapper around transfer_many() for the
+        common case of paying just one recipient; see that method for
+        the coin selection and change-output logic shared by both.
+
+        Raises TransactionError if the sender has insufficient funds.
+        """
+        return cls.transfer_many(
+            sender_wallet,
+            utxo_set,
+            [{"address": recipient_address, "amount": amount}],
+            fee
+        )
 
     # ─────────────────────────────────────────────────────────
     # Serialization
