@@ -674,6 +674,141 @@ async def handle_tx_send(request: web.Request) -> web.Response:
     })
 
 
+async def handle_tx_send_many(request: web.Request) -> web.Response:
+    """
+    POST /tx/send_many
+    Body:
+    {
+        "sender"     : "alice",
+        "recipients" : [
+            {"recipient": "bob",   "amount": 10.0},
+            {"recipient": "carol", "amount": 5.0}
+        ],
+        "fee"        : 0.01,
+        "node_port"  : 8000
+    }
+    fee and node_port are optional. Pays every recipient in a single
+    transaction, sharing one set of selected inputs and one fee rather
+    than submitting a separate transaction (and paying the fee again)
+    per recipient.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return err("request body must be valid JSON")
+    if not isinstance(body, dict):
+        return err("request body must be a JSON object")
+
+    sender_name = body.get("sender", "").strip()
+    recipients_raw = body.get("recipients")
+    fee_raw     = body.get("fee", 0.0)
+    node_port   = body.get("node_port")
+
+    if not sender_name:
+        return err("'sender' is required")
+    if not recipients_raw:
+        return err("'recipients' is required and must be a non-empty list")
+    if not isinstance(recipients_raw, list):
+        return err("'recipients' must be a list")
+
+    try:
+        fee = float(fee_raw)
+    except (TypeError, ValueError):
+        return err("'fee' must be a number")
+    if fee < 0:
+        return err("'fee' cannot be negative")
+
+    # Validate every recipient entry's shape before touching app state
+    # (wallet store, node map) -- fail fast on malformed input the same
+    # way handle_tx_send() does, rather than partway through resolving
+    # wallets.
+    parsed = []
+    for i, entry in enumerate(recipients_raw):
+        if not isinstance(entry, dict):
+            return err(f"recipients[{i}] must be an object")
+
+        recipient_name = entry.get("recipient", "").strip() \
+            if isinstance(entry.get("recipient"), str) else ""
+        amount_raw = entry.get("amount")
+
+        if not recipient_name:
+            return err(f"recipients[{i}]: 'recipient' is required")
+        if amount_raw is None:
+            return err(f"recipients[{i}]: 'amount' is required")
+
+        try:
+            amount = float(amount_raw)
+        except (TypeError, ValueError):
+            return err(f"recipients[{i}]: 'amount' must be a number")
+        if amount <= 0:
+            return err(f"recipients[{i}]: 'amount' must be positive")
+
+        parsed.append({"name": recipient_name, "amount": amount})
+
+    store    = request.app["wallet_store"]
+    node_map = request.app["node_map"]
+    nodes    = request.app["nodes"]
+
+    sender_wallet = store.get(sender_name)
+    if not sender_wallet:
+        return err(f"sender wallet '{sender_name}' not found")
+
+    resolved = []
+    for entry in parsed:
+        recipient_wallet = store.get(entry["name"])
+        if not recipient_wallet:
+            return err(f"recipient wallet '{entry['name']}' not found")
+
+        resolved.append({
+            "name"    : entry["name"],
+            "address" : recipient_wallet.address,
+            "amount"  : entry["amount"]
+        })
+
+    if node_port is not None:
+        try:
+            node = node_map.get(int(node_port))
+        except (TypeError, ValueError):
+            return err("'node_port' must be an integer")
+        if not node:
+            return err(
+                f"no node on port {node_port}. "
+                f"available: {list(node_map.keys())}"
+            )
+    else:
+        node = nodes[0]
+
+    try:
+        tx = Transaction.transfer_many(
+            sender_wallet = sender_wallet,
+            utxo_set      = node.chain.utxo_set,
+            recipients    = [
+                {"address": r["address"], "amount": r["amount"]}
+                for r in resolved
+            ],
+            fee           = fee
+        )
+    except Exception as e:
+        return err(str(e))
+
+    await node.submit_transaction(tx)
+
+    return ok({
+        "submitted"   : True,
+        "tx_id"       : tx.tx_id,
+        "sender"      : sender_name,
+        "recipients"  : [
+            {"recipient": r["name"], "amount": r["amount"]} for r in resolved
+        ],
+        "fee"         : fee,
+        "inputs_used" : len(tx.inputs),
+        "outputs"     : tx.outputs,
+        "node"        : node.port,
+        "sig_bytes"   : len(tx.signature),
+        "valid"       : tx.is_valid()
+    })
+
+
 # ─────────────────────────────────────────────────────────────
 # Application factory
 # ─────────────────────────────────────────────────────────────
@@ -714,6 +849,7 @@ def build_app(nodes: list, wallet_store: WalletStore) -> web.Application:
 
     # Transaction
     app.router.add_post("/tx/send",                        handle_tx_send)
+    app.router.add_post("/tx/send_many",                    handle_tx_send_many)
     app.router.add_post("/merkle/verify",                   handle_verify_proof)
 
     return app
