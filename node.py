@@ -857,6 +857,9 @@ class Node:
             for u in self.chain.utxo_set.utxos_for(address)
         ]
 
+    def transaction_history(self, address: str, limit: int = None) -> list:
+        return self.chain.transactions_for(address, limit=limit)
+
     def status(self) -> dict:
         peer_summary = self.peer_mgr.summary()
         return {
