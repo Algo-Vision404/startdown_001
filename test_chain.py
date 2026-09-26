@@ -354,5 +354,69 @@ class TestMedianTimePast(unittest.TestCase):
         self.assertEqual(Blockchain._median_time_past(chain, 3), 20.0)
 
 
+class TestTransactionsFor(unittest.TestCase):
+    def setUp(self):
+        self.chain = Blockchain()
+        self.alice = QuantumWallet()
+        self.bob   = QuantumWallet()
+
+        # Block 1: coinbase reward to alice.
+        self.chain.add_block([], self.alice.address)
+
+        # Block 2: alice sends bob 10, keeping the rest as change. Mined
+        # by a different address so alice's only involvement here is
+        # the transfer itself, not a second coinbase reward.
+        self.transfer = Transaction.transfer(
+            sender_wallet=self.alice,
+            utxo_set=self.chain.utxo_set,
+            recipient_address=self.bob.address,
+            amount=10.0,
+            fee=1.0,
+        )
+        self.chain.add_block([self.transfer], "other-miner")
+
+    def test_unrelated_address_has_no_history(self):
+        self.assertEqual(self.chain.transactions_for("nobody"), [])
+
+    def test_coinbase_recipient_shows_as_received_not_sent(self):
+        entries = self.chain.transactions_for(self.alice.address)
+        coinbase_entry = next(
+            e for e in entries if e["transaction"].is_coinbase
+        )
+
+        self.assertFalse(coinbase_entry["is_sender"])
+        self.assertEqual(coinbase_entry["received_amount"], 50.0)
+
+    def test_sender_sees_their_own_change_as_received(self):
+        entries = self.chain.transactions_for(self.alice.address)
+        transfer_entry = next(
+            e for e in entries if not e["transaction"].is_coinbase
+        )
+
+        self.assertTrue(transfer_entry["is_sender"])
+        # 50 (coinbase) - 10 (to bob) - 1 (fee) = 39 change back to alice.
+        self.assertEqual(transfer_entry["received_amount"], 39.0)
+
+    def test_recipient_sees_amount_received_but_is_not_sender(self):
+        entries = self.chain.transactions_for(self.bob.address)
+
+        self.assertEqual(len(entries), 1)
+        self.assertFalse(entries[0]["is_sender"])
+        self.assertEqual(entries[0]["received_amount"], 10.0)
+
+    def test_results_are_most_recent_block_first(self):
+        entries = self.chain.transactions_for(self.alice.address)
+
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(entries[0]["block_index"], 2)  # the transfer
+        self.assertEqual(entries[1]["block_index"], 1)  # the coinbase
+
+    def test_limit_caps_results_to_the_most_recent(self):
+        entries = self.chain.transactions_for(self.alice.address, limit=1)
+
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["block_index"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()
