@@ -385,6 +385,50 @@ async def handle_node_balance(request: web.Request) -> web.Response:
     })
 
 
+async def handle_node_history(request: web.Request) -> web.Response:
+    """
+    GET /node/{port}/history/{address}?limit=N
+
+    Every confirmed transaction involving `address`, most recent
+    block first. `limit` (optional query param) caps how many
+    entries are returned.
+    """
+    node = node_from_request(request)
+    if not node:
+        return err("node not found", 404)
+
+    address = request.match_info.get("address", "").strip()
+    if not address:
+        return err("address is required")
+
+    limit_raw = request.query.get("limit")
+    limit = None
+    if limit_raw is not None:
+        try:
+            limit = int(limit_raw)
+        except ValueError:
+            return err("'limit' must be an integer")
+        if limit < 0:
+            return err("'limit' cannot be negative")
+
+    entries = node.transaction_history(address, limit=limit)
+
+    return ok({
+        "address" : address,
+        "node"    : node.port,
+        "count"   : len(entries),
+        "history" : [
+            {
+                "block_index"     : e["block_index"],
+                "is_sender"       : e["is_sender"],
+                "received_amount" : e["received_amount"],
+                "transaction"     : format_tx(e["transaction"])
+            }
+            for e in entries
+        ]
+    })
+
+
 async def handle_node_utxos(request: web.Request) -> web.Response:
     """GET /node/{port}/utxos/{address}"""
     node = node_from_request(request)
@@ -837,6 +881,7 @@ def build_app(nodes: list, wallet_store: WalletStore) -> web.Application:
     app.router.add_get ("/node/{port}/block/{index}/proof/{tx_index}", handle_merkle_proof)
     app.router.add_get ("/node/{port}/mempool",            handle_node_mempool)
     app.router.add_get ("/node/{port}/balance/{address}",  handle_node_balance)
+    app.router.add_get ("/node/{port}/history/{address}",  handle_node_history)
     app.router.add_get ("/node/{port}/utxos/size",         handle_utxo_set_size)
     app.router.add_get ("/node/{port}/utxos/{address}",    handle_node_utxos)
     app.router.add_post("/node/{port}/mine",               handle_force_mine)
