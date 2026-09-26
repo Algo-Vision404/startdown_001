@@ -17,9 +17,18 @@
 #   wallet balance <name>
 #       Compute the balance of a wallet from the UTXO set.
 #
+#   wallet history <name> [limit]
+#       Print every confirmed transaction involving this wallet's
+#       address, most recent block first. Optional limit caps the
+#       number of entries shown.
+#
 #   tx send <sender_name> <recipient_name> <amount> [fee] [node_port]
 #       Sign and submit a UTXO transfer. Defaults to the first node
 #       and a fee of 0.
+#
+#   tx send_many <sender_name> <fee> <recipient>:<amount> [<recipient>:<amount> ...]
+#       Sign and submit a single transaction paying multiple
+#       recipients at once, sharing one set of inputs and one fee.
 #
 #   chain status
 #       Print height, validity, mempool size, and peers for all nodes.
@@ -202,6 +211,44 @@ class CLI:
             print(f"address : {wallet.address}")
             print(f"balance : {balance}")
 
+        elif sub == "history":
+            if len(args) < 2:
+                print("usage: wallet history <name> [limit]")
+                return
+            name   = args[1]
+            wallet = self.wallet_store.get(name)
+            if not wallet:
+                print(f"wallet '{name}' not found.")
+                return
+
+            limit = None
+            if len(args) > 2:
+                try:
+                    limit = int(args[2])
+                except ValueError:
+                    print(f"invalid limit: '{args[2]}'")
+                    return
+
+            node    = self.nodes[0]
+            entries = node.transaction_history(wallet.address, limit=limit)
+
+            if not entries:
+                print(f"no transaction history for {name}")
+                return
+
+            print(f"\n{name} transaction history (most recent first)\n")
+            print(f"{'BLOCK':<8} {'ROLE':<10} {'RECEIVED':<12} TX_ID")
+            print("─" * 80)
+            for entry in entries:
+                role = "sent" if entry["is_sender"] else "received"
+                tx   = entry["transaction"]
+                print(
+                    f"{entry['block_index']:<8} "
+                    f"{role:<10} "
+                    f"{entry['received_amount']:<12} "
+                    f"{tx.tx_id[:32]}..."
+                )
+
         else:
             print(f"unknown wallet sub-command: '{sub}'")
 
@@ -210,8 +257,13 @@ class CLI:
     # ─────────────────────────────────────────────────────────
 
     async def _tx_cmd(self, args: list):
-        if not args or args[0].lower() != "send":
+        if not args or args[0].lower() not in ("send", "send_many"):
             print("usage: tx send <sender> <recipient> <amount> [fee] [node_port]")
+            print("       tx send_many <sender> <fee> <recipient>:<amount> [<recipient>:<amount> ...]")
+            return
+
+        if args[0].lower() == "send_many":
+            await self._tx_send_many(args[1:])
             return
 
         args = args[1:]
@@ -302,6 +354,94 @@ class CLI:
         print(f"  from        : {sender_name} ({sender.address[:24]}...)")
         print(f"  to          : {recipient_name} ({recipient.address[:24]}...)")
         print(f"  amount      : {amount}")
+        print(f"  fee         : {fee}")
+        print(f"  inputs used : {len(tx.inputs)}")
+        print(f"  outputs     : {_outputs_summary(tx)}")
+        print(f"  sig_bytes   : {len(tx.signature)}")
+        print(f"  valid       : {tx.is_valid()}")
+
+    async def _tx_send_many(self, args: list):
+        """
+        tx send_many <sender> <fee> <recipient>:<amount> [<recipient>:<amount> ...]
+
+        Pays every recipient in a single transaction, sharing one set
+        of selected inputs and one fee. Always uses the first node
+        (no node_port option, to keep the colon-pair syntax simple).
+        """
+        usage = (
+            "usage: tx send_many <sender> <fee> "
+            "<recipient>:<amount> [<recipient>:<amount> ...]"
+        )
+        if len(args) < 3:
+            print(usage)
+            return
+
+        sender_name = args[0]
+
+        try:
+            fee = float(args[1])
+        except ValueError:
+            print(f"invalid fee: '{args[1]}'")
+            return
+        if fee < 0:
+            print("fee cannot be negative.")
+            return
+
+        sender = self.wallet_store.get(sender_name)
+        if not sender:
+            print(f"sender wallet '{sender_name}' not found.")
+            return
+
+        recipients = []
+        for pair in args[2:]:
+            if ":" not in pair:
+                print(f"invalid recipient:amount pair: '{pair}'")
+                return
+            recipient_name, amount_str = pair.split(":", 1)
+
+            try:
+                amount = float(amount_str)
+            except ValueError:
+                print(f"invalid amount in '{pair}': '{amount_str}'")
+                return
+            if amount <= 0:
+                print(f"amount must be positive in '{pair}'")
+                return
+
+            recipient = self.wallet_store.get(recipient_name)
+            if not recipient:
+                print(f"recipient wallet '{recipient_name}' not found.")
+                return
+
+            recipients.append({
+                "name": recipient_name,
+                "address": recipient.address,
+                "amount": amount
+            })
+
+        node = self.nodes[0]
+
+        try:
+            tx = Transaction.transfer_many(
+                sender_wallet = sender,
+                utxo_set      = node.chain.utxo_set,
+                recipients    = [
+                    {"address": r["address"], "amount": r["amount"]}
+                    for r in recipients
+                ],
+                fee           = fee
+            )
+        except TransactionError as e:
+            print(f"error: {e}")
+            return
+
+        await node.submit_transaction(tx)
+
+        print(f"transaction submitted to node {node.port}")
+        print(f"  tx_id       : {tx.tx_id[:32]}...")
+        print(f"  from        : {sender_name} ({sender.address[:24]}...)")
+        for r in recipients:
+            print(f"  to          : {r['name']} amount={r['amount']}")
         print(f"  fee         : {fee}")
         print(f"  inputs used : {len(tx.inputs)}")
         print(f"  outputs     : {_outputs_summary(tx)}")
@@ -493,9 +633,13 @@ commands:
   wallet create <name>                       create a new wallet
   wallet list                                list all wallets
   wallet balance <name>                      show wallet balance
+  wallet history <name> [limit]              show confirmed transaction history
 
   tx send <sender> <recipient> <amount>      submit a transaction
          [fee] [node_port]                   both trailing args optional
+
+  tx send_many <sender> <fee>                pay multiple recipients in
+         <recipient>:<amount> ...            one transaction, one fee
 
   chain status                               all node heights, peers, mempool sizes
   chain show [node_port]                     print full chain with transactions
