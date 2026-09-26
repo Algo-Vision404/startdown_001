@@ -565,6 +565,58 @@ class Blockchain:
     def height(self) -> int:
         return len(self.chain)
 
+    def transactions_for(self, address: str, limit: int = None) -> list:
+        """
+        Every confirmed transaction involving `address`, either as the
+        sender or as a recipient named in an output (including a
+        coinbase reward), across the whole chain.
+
+        This is a linear scan of every block's transactions, so it is
+        O(n) in total confirmed transaction count. Fine at this chain's
+        scale; a real deployment would maintain an address index
+        incrementally instead of scanning on every query.
+
+        Returned in reverse chronological order (most recent block
+        first), matching typical "history" UX expectations. `limit`
+        caps the number of entries returned, most recent first; pass
+        None (the default) for the full history.
+
+        Each entry is a dict:
+            block_index     -- which block this transaction is in
+            transaction     -- the Transaction object itself
+            is_sender       -- True if `address` is this tx's sender
+            received_amount -- sum of this tx's outputs paid to `address`
+                                (0.0 if none; a sender can still receive
+                                change back to themselves)
+
+        This does not compute a net balance delta for `address` (that
+        would require resolving each input's historical output amount
+        from further back in the chain) -- just what was paid to it and
+        whether it was the one spending. Use balance() for a running
+        total.
+        """
+        results = []
+        for block in self.chain:
+            for tx in block.transactions:
+                is_sender = (not tx.is_coinbase) and tx.sender == address
+                received_amount = sum(
+                    o["amount"] for o in tx.outputs if o["address"] == address
+                )
+                if not is_sender and received_amount == 0.0:
+                    continue
+
+                results.append({
+                    "block_index"     : block.index,
+                    "transaction"     : tx,
+                    "is_sender"       : is_sender,
+                    "received_amount" : received_amount
+                })
+
+        results.reverse()
+        if limit is not None:
+            results = results[:limit]
+        return results
+
     def print_chain(self) -> None:
         for block in self.chain:
             print(repr(block))
