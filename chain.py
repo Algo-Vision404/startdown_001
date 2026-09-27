@@ -2,7 +2,6 @@
 #
 # Blockchain with UTXO set, block rewards, and fee collection.
 
-import json
 import math
 import time
 
