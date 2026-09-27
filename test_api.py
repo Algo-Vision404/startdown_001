@@ -1,11 +1,15 @@
 import asyncio
 import json
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import api
 from block import Block
+from node import Node
+from Transaction import Transaction
+from wallet import QuantumWallet
 
 
 class FakeTransaction:
@@ -258,6 +262,83 @@ class TestMerkleRoutes(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(tree.proof(-1))
         self.assertIsNone(tree.leaf_hash(-1))
+
+
+class QueryRequest:
+    def __init__(self, node, address, query=None):
+        self.app = {"node_map": {node.port: node}}
+        self.match_info = {"port": str(node.port), "address": address}
+        self.query = query or {}
+
+
+class TestHistoryRoute(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.data_dir = tempfile.TemporaryDirectory()
+        self.node = Node("127.0.0.1", 8199, data_dir=self.data_dir.name)
+        self.alice = QuantumWallet()
+        self.bob = QuantumWallet()
+
+        block = self.node.chain.mine_block([], self.alice.address)
+        self.node.chain.append_block(block)
+
+        tx = Transaction.transfer(
+            sender_wallet=self.alice,
+            utxo_set=self.node.chain.utxo_set,
+            recipient_address=self.bob.address,
+            amount=10.0,
+            fee=1.0,
+        )
+        block2 = self.node.chain.mine_block([tx], "other-miner")
+        self.node.chain.append_block(block2)
+
+    def tearDown(self):
+        self.data_dir.cleanup()
+
+    async def test_history_route_returns_entries_most_recent_first(self):
+        response = await api.handle_node_history(
+            QueryRequest(self.node, self.alice.address)
+        )
+        data = json.loads(response.text)
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(data["count"], 2)
+        self.assertEqual(data["history"][0]["block_index"], 2)
+        self.assertTrue(data["history"][0]["is_sender"])
+        self.assertEqual(data["history"][1]["block_index"], 1)
+        self.assertFalse(data["history"][1]["is_sender"])
+
+    async def test_history_route_respects_limit_query_param(self):
+        response = await api.handle_node_history(
+            QueryRequest(self.node, self.alice.address, query={"limit": "1"})
+        )
+        data = json.loads(response.text)
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(data["history"][0]["block_index"], 2)
+
+    async def test_history_route_rejects_non_integer_limit(self):
+        response = await api.handle_node_history(
+            QueryRequest(self.node, self.alice.address, query={"limit": "abc"})
+        )
+
+        self.assertEqual(response.status, 400)
+
+    async def test_history_route_rejects_negative_limit(self):
+        response = await api.handle_node_history(
+            QueryRequest(self.node, self.alice.address, query={"limit": "-1"})
+        )
+
+        self.assertEqual(response.status, 400)
+
+    async def test_history_route_returns_empty_for_unrelated_address(self):
+        response = await api.handle_node_history(
+            QueryRequest(self.node, "unrelated-address")
+        )
+        data = json.loads(response.text)
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(data["count"], 0)
 
 
 if __name__ == "__main__":
