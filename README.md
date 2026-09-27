@@ -3,11 +3,12 @@
 Quantum Chain is a Python blockchain prototype with:
 
 - UTXO-based transactions and block validation
-- signed wallet transactions
-- proof-of-work mining
-- WebSocket peer communication and peer discovery
+- signed wallet transactions, including multi-recipient batches
+- proof-of-work mining with difficulty retargeting
+- fork resolution by cumulative proof-of-work, not block count
+- WebSocket peer communication, peer discovery, and peer penalization for malformed data
 - an `aiohttp` REST API
-- JSON persistence for chains, UTXOs, wallets, and peers
+- JSON persistence for chains, UTXOs, wallets, and peers, with automatic repair of a stale UTXO snapshot
 
 This repository is for learning and local development. It is not a production cryptocurrency or a secure wallet application.
 
@@ -137,6 +138,7 @@ Submitting a transaction places it in the mempool. It does not change a confirme
 | `GET` | `/wallet/{name}` | Get wallet metadata |
 | `GET` | `/wallet/{name}/balance` | Get a wallet's confirmed balance and UTXO count |
 | `POST` | `/tx/send` | Build, sign, and submit a UTXO transfer |
+| `POST` | `/tx/send_many` | Build, sign, and submit a single transaction paying multiple recipients |
 
 Transaction body:
 
@@ -152,6 +154,20 @@ Transaction body:
 
 `fee` and `node_port` are optional. The sender and recipient must already exist in the wallet store.
 
+Multi-recipient transaction body (`/tx/send_many`), sharing one set of inputs and one fee across every recipient:
+
+```json
+{
+  "sender": "miner_node",
+  "recipients": [
+    { "recipient": "alice", "amount": 10 },
+    { "recipient": "bob", "amount": 5 }
+  ],
+  "fee": 0.5,
+  "node_port": 8123
+}
+```
+
 ### Node Inspection and Mining
 
 | Method | Endpoint | Description |
@@ -165,6 +181,7 @@ Transaction body:
 | `GET` | `/node/{port}/peers` | Inspect known peers and connection state |
 | `POST` | `/node/{port}/peers/add` | Add a peer with `{ "host": "127.0.0.1", "port": 8124 }` |
 | `GET` | `/node/{port}/balance/{address}` | Query an address balance |
+| `GET` | `/node/{port}/history/{address}` | Confirmed transaction history for an address, most recent block first (optional `?limit=N`) |
 | `GET` | `/node/{port}/utxos/{address}` | List an address's UTXOs |
 
 Merkle endpoints are also available at `/node/{port}/block/{index}/merkle`, `/node/{port}/block/{index}/proof/{tx_index}`, and `/merkle/verify`.
@@ -228,5 +245,7 @@ The repository includes configuration, wallet-signing, API mining, and mempool r
 | `Transaction.py` | Signed UTXO transaction construction and validation |
 | `wallet.py` | Wallet key generation, signing, verification, and addresses |
 | `api.py` | REST API routes |
+| `cli.py` | Interactive command-line interface for a running node network |
 | `storage.py` | Chain and wallet persistence |
+| `peer_manager.py` | Peer discovery, scoring, and banning |
 | `test_*.py` | Regression tests |
