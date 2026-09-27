@@ -8,16 +8,16 @@
 #
 # Commands:
 #
-#   wallet create <name>
-#       Generate a new ML-DSA-65 wallet and store it under <name>.
+#   wallet create <n>
+#       Generate a new ML-DSA-65 wallet and store it under <n>.
 #
 #   wallet list
 #       Print all stored wallet names and their addresses.
 #
-#   wallet balance <name>
+#   wallet balance <n>
 #       Compute the balance of a wallet from the UTXO set.
 #
-#   wallet history <name> [limit]
+#   wallet history <n> [limit]
 #       Print every confirmed transaction involving this wallet's
 #       address, most recent block first. Optional limit caps the
 #       number of entries shown.
@@ -55,9 +55,7 @@
 #       Shut down the network and quit.
 
 import asyncio
-import sys
 
-from wallet import QuantumWallet
 from Transaction import Transaction, TransactionError
 from storage import WalletStore
 
@@ -168,15 +166,15 @@ class CLI:
 
         if sub == "create":
             if len(args) < 2:
-                print("usage: wallet create <name>")
+                print("usage: wallet create <n>")
                 return
             name = args[1]
             try:
                 wallet = self.wallet_store.create(name)
-                print(f"wallet created")
+                print("wallet created")
                 print(f"  name      : {name}")
                 print(f"  address   : {wallet.address}")
-                print(f"  algorithm : ML-DSA-65 (Dilithium3)")
+                print("  algorithm : ML-DSA-65 (Dilithium3)")
                 print(f"  pubkey_sz : {len(wallet.public_key)} bytes")
             except ValueError as e:
                 print(f"error: {e}")
@@ -184,7 +182,7 @@ class CLI:
         elif sub == "list":
             names = self.wallet_store.list_wallets()
             if not names:
-                print("no wallets found. use 'wallet create <name>'.")
+                print("no wallets found. use 'wallet create <n>'.")
                 return
             print(f"\n{'NAME':<20} {'ADDRESS'}")
             print("─" * 70)
@@ -194,7 +192,7 @@ class CLI:
 
         elif sub == "balance":
             if len(args) < 2:
-                print("usage: wallet balance <name>")
+                print("usage: wallet balance <n>")
                 return
             name   = args[1]
             wallet = self.wallet_store.get(name)
@@ -213,7 +211,7 @@ class CLI:
 
         elif sub == "history":
             if len(args) < 2:
-                print("usage: wallet history <name> [limit]")
+                print("usage: wallet history <n> [limit]")
                 return
             name   = args[1]
             wallet = self.wallet_store.get(name)
@@ -619,9 +617,9 @@ class CLI:
         print(f"all same tip    : {len(unique_tips) == 1}")
 
         if len(unique_heights) == 1 and len(unique_tips) == 1:
-            print(f"consensus       : reached")
+            print("consensus       : reached")
         else:
-            print(f"consensus       : not reached — nodes diverged")
+            print("consensus       : not reached — nodes diverged")
 
     # ─────────────────────────────────────────────────────────
     # Help
@@ -630,10 +628,10 @@ class CLI:
     def _help(self):
         print("""
 commands:
-  wallet create <name>                       create a new wallet
+  wallet create <n>                       create a new wallet
   wallet list                                list all wallets
-  wallet balance <name>                      show wallet balance
-  wallet history <name> [limit]              show confirmed transaction history
+  wallet balance <n>                      show wallet balance
+  wallet history <n> [limit]              show confirmed transaction history
 
   tx send <sender> <recipient> <amount>      submit a transaction
          [fee] [node_port]                   both trailing args optional
