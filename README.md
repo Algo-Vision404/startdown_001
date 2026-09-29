@@ -232,7 +232,7 @@ Compile the project modules:
 python -m py_compile api.py block.py chain.py cli.py main.py main_local.py merkle.py message.py node.py peer_manager.py storage.py Transaction.py utxo.py wallet.py
 ```
 
-The repository includes configuration, wallet-signing, API mining, and mempool regression tests.
+The repository includes configuration, wallet-signing, API mining, mempool, and consensus regression tests. `test_network.py` runs real nodes over localhost WebSocket connections to cover handshakes, block and transaction gossip, chain sync, fork resolution, and peer banning between separate nodes. It uses ports 24200 and up.
 
 ## Project Layout
 
