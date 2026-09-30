@@ -155,7 +155,15 @@ class PeerManager:
     def mark_connected(self, host: str, port: int) -> None:
         address = f"{host}:{port}"
         if address in self._peers:
-            peer            = self._peers[address]
+            peer = self._peers[address]
+            # A banned peer must stay banned through a reconnect: without
+            # this guard, mark_connected would unconditionally overwrite
+            # BANNED with CONNECTED and reset fail_count to 0, silently
+            # undoing the ban the moment the peer tries again -- see
+            # node.py's _on_handshake, which is the actual call site that
+            # would otherwise let a banned peer walk straight back in.
+            if peer.state == PeerState.BANNED:
+                return
             peer.state      = PeerState.CONNECTED
             peer.last_seen  = time.time()
             peer.fail_count = 0
@@ -188,6 +196,11 @@ class PeerManager:
         address = f"{host}:{port}"
         if address in self._peers:
             self._peers[address].last_seen = time.time()
+
+    def is_banned(self, host: str, port: int) -> bool:
+        address = f"{host}:{port}"
+        peer = self._peers.get(address)
+        return peer is not None and peer.state == PeerState.BANNED
 
     def ban(self, host: str, port: int) -> None:
         address = f"{host}:{port}"
