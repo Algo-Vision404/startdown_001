@@ -240,6 +240,44 @@ class TestPeerBanOverTheWire(NetworkTestCase):
         self.assertTrue(await wait_for(a_is_banned))
         self.assertTrue(await wait_for(lambda: a.port not in b.peers))
 
+    async def test_banned_peer_cannot_un_ban_itself_by_reconnecting(self):
+        # mark_connected() previously overwrote BANNED with CONNECTED
+        # unconditionally, and _on_handshake() never checked ban status
+        # before registering a new connection -- so a banned peer could
+        # simply reconnect with a fresh websocket and walk right back in,
+        # fully un-banned, fail_count reset to 0. Both are fixed now:
+        # mark_connected() refuses to resurrect a BANNED peer, and
+        # _on_handshake() rejects and closes the connection outright.
+        a = await self.start_node()
+        b = await self.start_node()
+        await self.connect(a, b)
+        self.assertTrue(await wait_for(lambda: a.port in b.peers))
+
+        garbage = build(MessageType.BLOCK, a.port, {"missing": "fields"})
+        for _ in range(b.peer_mgr.BAN_AFTER):
+            await a.peers[b.port].send(garbage)
+
+        def a_banned_on_b():
+            peer = next(
+                (p for p in b.peer_mgr.all_peers() if p.port == a.port), None
+            )
+            return peer is not None and peer.state == PeerState.BANNED
+
+        self.assertTrue(await wait_for(a_banned_on_b))
+        self.assertTrue(await wait_for(lambda: a.port not in b.peers))
+
+        # a reconnects with a brand new websocket connection.
+        reconnected = await a._connect_to(HOST, b.port)
+        self.assertTrue(reconnected, "the TCP-level reconnect itself succeeds")
+
+        # b must refuse to ever register a as connected again.
+        still_rejected = await wait_for(lambda: a.port in b.peers, timeout=2.0)
+        self.assertFalse(still_rejected)
+
+        peer = next(p for p in b.peer_mgr.all_peers() if p.port == a.port)
+        self.assertEqual(peer.state, PeerState.BANNED)
+        self.assertEqual(peer.fail_count, b.peer_mgr.BAN_AFTER)
+
 
 if __name__ == "__main__":
     unittest.main()
