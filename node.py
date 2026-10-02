@@ -355,8 +355,8 @@ class Node:
         elif msg_type == MessageType.GET_PEERS:
             # Respond with our known peer list
             peers_data = self.peer_mgr.shareable_peers()
-            await websocket.send(
-                build(MessageType.PEERS, self.port, peers_data)
+            await self._safe_send(
+                websocket, build(MessageType.PEERS, self.port, peers_data)
             )
 
         elif msg_type == MessageType.PEERS:
@@ -389,8 +389,8 @@ class Node:
 
         elif msg_type == MessageType.REQUEST_CHAIN:
             chain_data = [serialize_block(b) for b in self.chain.chain]
-            await websocket.send(
-                build(MessageType.CHAIN, self.port, chain_data)
+            await self._safe_send(
+                websocket, build(MessageType.CHAIN, self.port, chain_data)
             )
 
         elif msg_type == MessageType.CHAIN:
@@ -398,7 +398,7 @@ class Node:
                 await self._on_chain(data, sender_port)
 
         elif msg_type == MessageType.PING:
-            await websocket.send(build(MessageType.PONG, self.port))
+            await self._safe_send(websocket, build(MessageType.PONG, self.port))
 
         elif msg_type == MessageType.PONG:
             if sender_port:
@@ -429,6 +429,23 @@ class Node:
         else:
             host = "localhost"
             port = sender_port
+
+        # A banned peer must not be treated as connected just because it
+        # reconnected. mark_connected() itself now refuses to resurrect a
+        # BANNED peer's state, but that alone isn't enough here: without
+        # this check, this method would still register the new websocket
+        # in self.peers below and go on handling its messages normally --
+        # the ban would exist in peer_mgr's bookkeeping but do nothing.
+        if host and self.peer_mgr.is_banned(host, port):
+            logging.warning(
+                f"[{self.port}] refusing handshake from banned "
+                f"peer {host}:{sender_port}"
+            )
+            try:
+                await websocket.close()
+            except Exception:
+                pass
+            return
 
         if host:
             self.peer_mgr.add(host, port)
@@ -833,6 +850,26 @@ class Node:
     # ─────────────────────────────────────────────────────────
     # Broadcast
     # ─────────────────────────────────────────────────────────
+
+    async def _safe_send(self, websocket, message: str) -> None:
+        """
+        Send a direct reply to one peer, swallowing a closed/closing
+        connection instead of letting it surface as an unhandled
+        exception out of this connection's handler task.
+
+        This is a normal race in any protocol implementation -- the
+        peer can disconnect between us reading their message and us
+        replying to it -- not just something introduced by explicitly
+        closing a banned peer's connection in _on_handshake(), though
+        that is what first surfaced the gap: none of the direct
+        request/response sends here (GET_PEERS, REQUEST_CHAIN, PING)
+        were wrapped, unlike _broadcast() below and the ping loop,
+        which already tolerate this.
+        """
+        try:
+            await websocket.send(message)
+        except Exception as e:
+            logging.debug(f"[{self.port}] reply send failed: {e}")
 
     async def _broadcast(self, message: str):
         dead = []
