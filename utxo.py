@@ -158,12 +158,19 @@ class UTXOSet:
         """
         Undo a block by reversing its UTXO changes.
 
-        Used during chain reorganization when a longer valid fork
-        is adopted and the current tip must be unwound.
+        Not currently called anywhere: node.py resolves forks by
+        rebuilding a candidate chain's entire UTXO set from a fresh
+        UTXOSet() via repeated apply_block() calls (see _on_chain()),
+        rather than incrementally rolling back the old tip and rolling
+        forward the new one. This method is kept as a correct, tested
+        building block for that incremental approach, should a future
+        change need to avoid replaying a whole chain to switch tips.
 
         previous_utxos is a list of UTXO dicts that were spent by
-        this block and must be restored. The caller is responsible
-        for tracking these at apply time.
+        this block and must be restored -- the caller is responsible
+        for capturing these (e.g. via get()) before calling
+        apply_block(), since apply_block() does not record its own
+        undo data.
 
         New outputs created by this block are simply removed.
         """
