@@ -198,6 +198,18 @@ class QuantumWallet:
         Rejects a wallet file saved under a different algorithm
         (e.g. an old Ed25519-era wallet file) rather than silently
         misinterpreting its key bytes as ML-DSA-65 material.
+
+        Also rejects a file whose stored address does not match the
+        one actually derived from its public key -- e.g. a hand-edited
+        or corrupted file. WalletStore._load() (storage.py) already
+        performs this same check for wallets loaded that way; this
+        method is a separate, independent load path and needs its own
+        copy of the check rather than silently trusting the file.
+        Without it, this wallet's signatures would carry an address
+        that doesn't match its own public key -- something that would
+        only surface later as a confusing validation failure far from
+        the actual cause (Transaction.is_valid() derives the address
+        from sender_public_key and compares it against sender).
         """
         if not os.path.exists(filepath):
             raise WalletError(f"Wallet file not found: {filepath}")
@@ -216,6 +228,14 @@ class QuantumWallet:
         instance.public_key  = base64.b64decode(data["public_key"])
         instance.private_key = base64.b64decode(data["private_key"])
         instance.address     = data["address"]
+
+        expected_address = cls._derive_address(instance.public_key)
+        if instance.address != expected_address:
+            raise WalletError(
+                f"wallet file at {filepath} has an address that does "
+                f"not match its public key (file is corrupted or has "
+                f"been tampered with)"
+            )
 
         return instance
 
