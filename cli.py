@@ -8,16 +8,16 @@
 #
 # Commands:
 #
-#   wallet create <n>
-#       Generate a new ML-DSA-65 wallet and store it under <n>.
+#   wallet create <name>
+#       Generate a new ML-DSA-65 wallet and store it under <name>.
 #
 #   wallet list
 #       Print all stored wallet names and their addresses.
 #
-#   wallet balance <n>
+#   wallet balance <name>
 #       Compute the balance of a wallet from the UTXO set.
 #
-#   wallet history <n> [limit]
+#   wallet history <name> [limit]
 #       Print every confirmed transaction involving this wallet's
 #       address, most recent block first. Optional limit caps the
 #       number of entries shown.
@@ -47,6 +47,13 @@
 #
 #   consensus
 #       Check whether all nodes have the same height and tip hash.
+#
+#   peers [node_port]
+#       List known peers and their connection state.
+#
+#   peers add <host> <port> [node_port]
+#       Add a peer to a node's candidate list, connecting right
+#       away if the node still needs more peers.
 #
 #   help
 #       Print this command list.
@@ -150,6 +157,9 @@ class CLI:
         elif cmd == "consensus":
             self._consensus_cmd()
 
+        elif cmd == "peers":
+            await self._peers_cmd(parts[1:])
+
         else:
             print(f"unknown command: '{cmd}'. type 'help'.")
 
@@ -166,7 +176,7 @@ class CLI:
 
         if sub == "create":
             if len(args) < 2:
-                print("usage: wallet create <n>")
+                print("usage: wallet create <name>")
                 return
             name = args[1]
             try:
@@ -182,7 +192,7 @@ class CLI:
         elif sub == "list":
             names = self.wallet_store.list_wallets()
             if not names:
-                print("no wallets found. use 'wallet create <n>'.")
+                print("no wallets found. use 'wallet create <name>'.")
                 return
             print(f"\n{'NAME':<20} {'ADDRESS'}")
             print("─" * 70)
@@ -192,7 +202,7 @@ class CLI:
 
         elif sub == "balance":
             if len(args) < 2:
-                print("usage: wallet balance <n>")
+                print("usage: wallet balance <name>")
                 return
             name   = args[1]
             wallet = self.wallet_store.get(name)
@@ -211,7 +221,7 @@ class CLI:
 
         elif sub == "history":
             if len(args) < 2:
-                print("usage: wallet history <n> [limit]")
+                print("usage: wallet history <name> [limit]")
                 return
             name   = args[1]
             wallet = self.wallet_store.get(name)
@@ -592,6 +602,73 @@ class CLI:
             )
 
     # ─────────────────────────────────────────────────────────
+    # Peers command
+    # ─────────────────────────────────────────────────────────
+
+    async def _peers_cmd(self, args: list):
+        """
+        peers [node_port]
+            List known peers and their connection state.
+
+        peers add <host> <port> [node_port]
+            Add a peer to a node's candidate list and attempt to
+            connect to it right away if the node needs more peers.
+        """
+        if args and args[0].lower() == "add":
+            await self._peers_add(args[1:])
+            return
+
+        node_port = int(args[0]) if args else self.nodes[0].port
+        node      = self._node_map.get(node_port)
+        if not node:
+            print(f"no node on port {node_port}")
+            return
+
+        peers = node.peer_mgr.all_peers()
+        if not peers:
+            print(f"node {node_port} has no known peers")
+            return
+
+        print(f"\nnode {node_port} peers  ({node.peer_mgr.summary()})\n")
+        print(f"{'HOST':<16} {'PORT':<8} {'STATE':<12} {'SCORE':<8} FAILS")
+        print("─" * 60)
+        for peer in peers:
+            print(
+                f"{peer.host:<16} "
+                f"{peer.port:<8} "
+                f"{peer.state.value:<12} "
+                f"{peer.score:<8} "
+                f"{peer.fail_count}"
+            )
+
+    async def _peers_add(self, args: list):
+        usage = "usage: peers add <host> <port> [node_port]"
+        if len(args) < 2:
+            print(usage)
+            return
+
+        host = args[0]
+        try:
+            port = int(args[1])
+        except ValueError:
+            print(f"invalid port: '{args[1]}'")
+            return
+
+        node_port = int(args[2]) if len(args) > 2 else self.nodes[0].port
+        node      = self._node_map.get(node_port)
+        if not node:
+            print(f"no node on port {node_port}")
+            return
+
+        added = node.peer_mgr.add(host, port)
+
+        if node.peer_mgr.needs_peers():
+            asyncio.create_task(node._connect_to(host, port))
+
+        print(f"peer {host}:{port} {'added' if added else 'already known'}")
+        print(f"node {node_port} peer summary: {node.peer_mgr.summary()}")
+
+    # ─────────────────────────────────────────────────────────
     # Consensus command
     # ─────────────────────────────────────────────────────────
 
@@ -628,10 +705,10 @@ class CLI:
     def _help(self):
         print("""
 commands:
-  wallet create <n>                       create a new wallet
-  wallet list                                list all wallets
-  wallet balance <n>                      show wallet balance
-  wallet history <n> [limit]              show confirmed transaction history
+  wallet create <name>                        create a new wallet
+  wallet list                                 list all wallets
+  wallet balance <name>                       show wallet balance
+  wallet history <name> [limit]               show confirmed transaction history
 
   tx send <sender> <recipient> <amount>      submit a transaction
          [fee] [node_port]                   both trailing args optional
@@ -648,6 +725,9 @@ commands:
   mempool [node_port]                        print pending transactions
 
   consensus                                  check if all nodes agree
+
+  peers [node_port]                          list known peers and their state
+  peers add <host> <port> [node_port]        add a peer and try connecting
 
   help                                       print this list
   exit                                       shut down and quit
