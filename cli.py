@@ -33,8 +33,9 @@
 #   chain status
 #       Print height, validity, mempool size, and peers for all nodes.
 #
-#   chain show [node_port]
-#       Print all blocks and a summary of their transactions.
+#   chain show [node_port] [limit]
+#       Print blocks and a summary of their transactions. With
+#       limit, only the most recent `limit` blocks are shown.
 #
 #   chain verify [node_port]
 #       Run full chain validation and report the result.
@@ -492,8 +493,25 @@ class CLI:
             if not node:
                 print(f"no node on port {node_port}")
                 return
+
+            limit = None
+            if len(args) > 2:
+                try:
+                    limit = int(args[2])
+                except ValueError:
+                    print(f"invalid limit: '{args[2]}'")
+                    return
+
+            blocks = node.chain.chain
+            omitted = 0
+            if limit is not None and limit < len(blocks):
+                omitted = len(blocks) - limit
+                blocks  = blocks[-limit:]
+
             print(f"\nchain on node {node_port}  height={node.chain.height()}\n")
-            for block in node.chain.chain:
+            if omitted:
+                print(f"  ({omitted} earlier block(s) omitted -- showing last {limit})\n")
+            for block in blocks:
                 print(repr(block))
                 if block.transactions:
                     for tx in block.transactions:
@@ -717,7 +735,7 @@ commands:
          <recipient>:<amount> ...            one transaction, one fee
 
   chain status                               all node heights, peers, mempool sizes
-  chain show [node_port]                     print full chain with transactions
+  chain show [node_port] [limit]              print chain with transactions
   chain verify [node_port]                   run full chain validation
 
   block show <index> [node_port]             print a specific block in detail
